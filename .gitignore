@@ -1,0 +1,11 @@
+*/.venv
+*/target
+/target
+*/wandb
+bayronik-model/scripts/__pycache__/
+.DS_Store
+*/__pycache__
+Cargo.lock
+*/Cargo.lock
+*/data
+*/weights

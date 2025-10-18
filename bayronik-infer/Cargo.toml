@@ -1,0 +1,12 @@
+[package]
+name = "bayronik-infer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+crossterm = "0.29.0"
+npyz = "0.8.4"
+rand = "0.8"
+ratatui = "0.29.0"
+tch = "0.22.0"
