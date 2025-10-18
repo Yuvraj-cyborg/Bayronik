@@ -2,7 +2,7 @@
 
 A high-performance, multi-fidelity field-level emulator that generates realistic 2D convergence (κ) maps including baryonic effects, without running expensive hydrodynamic simulations.
 
-## 🎯 Scientific Goal
+## Scientific Goal
 
 Baryonic feedback (AGN, supernovae) redistributes matter on ~kpc–Mpc scales and biases weak-lensing cosmology. **Bayronik** emulates these effects instantly using machine learning, enabling:
 - Fast forward modeling for likelihood-free inference
@@ -12,11 +12,11 @@ Baryonic feedback (AGN, supernovae) redistributes matter on ~kpc–Mpc scales an
 ### Why Field-Level?
 Summary statistics (power spectra) discard information. Field-level emulators produce maps compatible with many statistics and can be forward-modeled into realistic observations.
 
-### 📚 Documentation
+### Documentation
 - **[GUIDE.md](GUIDE.md)** - Complete TUI visualization guide (how to read colors, statistics, physics)
 - **[README.md](README.md)** - This file (setup, architecture, data access)
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 bayronik/
@@ -92,7 +92,7 @@ cd ~/Projects/bayronik
 - `r` - Random simulation
 - `q` - Quit
 
-**📖 [Complete TUI Guide →](GUIDE.md)** - Learn how to interpret the visualizations!
+** [Complete TUI Guide →](GUIDE.md)** - Learn how to interpret the visualizations!
 ```
 
 **Pro tip**: Create an alias in your shell:
@@ -100,7 +100,7 @@ cd ~/Projects/bayronik
 alias bayronik-infer='cd bayronik/bayronik-infer && source ../bayronik-model/.venv/bin/activate && export DYLD_LIBRARY_PATH=$(python -c "import torch; import os; print(os.path.join(os.path.dirname(torch.__file__), \"lib\"))") && export LIBTORCH_USE_PYTORCH=1 && cargo run --release'
 ```
 
-## 📊 Data Access
+## Data Access
 
 ### CAMELS Multifield Dataset (CMD)
 
@@ -120,7 +120,7 @@ wget --user=<username> --password=<password> \
   https://users.flatironinstitute.org/~fvillaescusa/priv/CMD_IllustrisTNG/Maps_*_CV_z=0.00.hdf5
 ```
 
-## 📚 Architecture Details
+## Architecture Details
 
 ### bayronik-model (Python)
 - **Model**: U-Net (encoder-decoder with skip connections)
