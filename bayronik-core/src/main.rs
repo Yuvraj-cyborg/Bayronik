@@ -1,58 +1,49 @@
-//! The main entry point for the core N-body simulation crate.
-
 mod sim;
 
 use sim::fft_solver::FftSolver;
+use sim::forces;
 use sim::grid::Grid;
-use sim::gravity; 
+use sim::gravity;
 use sim::particle::ParticleSet;
 
 fn main() {
-    println!("Initializing Baryonic Field Emulator - Core Simulation");
+    println!("bayronik-core: N-body PM simulation");
 
-    // Simulation Params
-    const NUM_PARTICLES: usize = 10_000; // Start with a small number
-    const GRID_RESOLUTION: usize = 32;   // A 32x32x32 grid
-    const BOX_SIZE: f32 = 100.0;         // Simulation box size in Mpc/h
+    const NUM_PARTICLES: usize = 32_768;
+    const GRID_RESOLUTION: usize = 64;
+    const BOX_SIZE: f32 = 100.0;
+    const TIME_STEP: f32 = 0.01;
+    const NUM_STEPS: usize = 10;
 
     let mut particles = ParticleSet::new();
     particles.initialize_randomly(NUM_PARTICLES, BOX_SIZE);
-    println!("Initialized {} particles randomly.", NUM_PARTICLES);
+    println!("Initialized {} particles in {}^3 Mpc/h box", NUM_PARTICLES, BOX_SIZE);
 
     let mut grid = Grid::new(GRID_RESOLUTION, BOX_SIZE);
-    println!("Initialized a {}^3 grid.", GRID_RESOLUTION);
-
     let mut fft_solver = FftSolver::new(GRID_RESOLUTION);
+    println!("Grid resolution: {}^3\n", GRID_RESOLUTION);
 
-    println!("\n--- Performing one simulation step ---");
+    for step in 0..NUM_STEPS {
+        println!("Step {}/{}", step + 1, NUM_STEPS);
+        
+        grid.clear_density();
+        gravity::assign_mass_cic(&particles, &mut grid);
+        fft_solver.solve_potential(&mut grid);
+        
+        let (fx, fy, fz) = forces::calculate_forces_from_potential(&grid);
+        forces::interpolate_forces_to_particles(&mut particles, &grid, &fx, &fy, &fz);
+        
+        particles.integrate(TIME_STEP);
+        
+        let (fx_new, fy_new, fz_new) = forces::calculate_forces_from_potential(&grid);
+        forces::interpolate_forces_to_particles(&mut particles, &grid, &fx_new, &fy_new, &fz_new);
+        particles.kick(TIME_STEP);
+    }
 
-    // Clear the density grid from the previous step.
-    grid.clear_density();
-    println!("1. Cleared density grid.");
-
-    // Assign particle masses to the grid (CIC assignment).
-    println!("2. Assigning particle mass to grid...");
-    gravity::assign_mass_cic(&particles, &mut grid); 
-
-    // Solve for gravitational potential using FFT.
-    println!("3. Solving for potential...");
-    fft_solver.solve_potential(&mut grid);
-
-    // // 4. Calculate forces on the grid from the potential.
-    // //    (We will implement this function next).
-    // println!("4. Calculating forces on grid (TODO)...");
-    // // calculate_forces(&mut grid);
-
-    // // 5. Interpolate forces from the grid back to the particles.
-    // //    (We will implement this function next).
-    // println!("5. Interpolating forces back to particles (TODO)...");
-    // // interpolate_forces_to_particles(&grid, &mut particles);
-
-    // // 6. Evolve particles forward in time (kick-drift-kick).
-    // //    (We will implement this function next).
-    // println!("6. Evolving particles (TODO)...");
-    // // evolve_particles(&mut particles, time_step);
-
-    println!("\nSimulation step conceptualized. Next, we'll calculate forces from potential!");
+    println!("\nProjecting to 2D map (256x256)...");
+    let map_2d = particles.project_to_2d(256);
+    println!("Mean surface density: {:.3e}", map_2d.iter().sum::<f32>() / map_2d.len() as f32);
+    
+    println!("\nSimulation complete. Use particle.project_to_2d() for outputs.");
 }
 

@@ -5,8 +5,11 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+bayronik-core = { path = "../bayronik-core" }
 crossterm = "0.29.0"
 npyz = "0.8.4"
+plotters = "0.3"
+plotters-backend = "0.3"
 rand = "0.8"
 ratatui = "0.29.0"
 tch = "0.22.0"
