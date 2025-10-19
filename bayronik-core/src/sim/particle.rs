@@ -21,6 +21,7 @@ impl ParticleSet {
     }
 
     /// Initialize particles with random uniform positions.
+    #[allow(dead_code)]
     pub fn initialize_randomly(&mut self, num_particles: usize, box_size: f32) {
         self.box_size = box_size;
         let mut rng = rand::rng();
@@ -36,6 +37,96 @@ impl ParticleSet {
                 mass: 1.0,
             })
             .collect();
+    }
+    
+    /// Initialize particles from density field with cosmological-like clustering.
+    /// Uses rejection sampling to create initial overdensities.
+    pub fn initialize_grid_with_perturbations(&mut self, num_particles: usize, box_size: f32) {
+        self.box_size = box_size;
+        let mut rng = rand::rng();
+        
+        self.particles = Vec::new();
+        
+        // Generate density field using Fourier modes (simplified power spectrum)
+        let n_modes = 8;
+        let mut modes = Vec::new();
+        
+        for i in 1..=n_modes {
+            let k = (i as f32) * 2.0 * 3.14159 / box_size;
+            let amplitude = 1.0 / (i as f32).sqrt(); // P(k) ~ k^(-1/2) approximation
+            
+            for _ in 0..3 {
+                let kx = k * (rng.random::<f32>() * 2.0 - 1.0);
+                let ky = k * (rng.random::<f32>() * 2.0 - 1.0);
+                let kz = k * (rng.random::<f32>() * 2.0 - 1.0);
+                let phase = rng.random::<f32>() * 6.28318;
+                modes.push((kx, ky, kz, phase, amplitude));
+            }
+        }
+        
+        // Helper function to evaluate density at position
+        let density_at = |x: f32, y: f32, z: f32| -> f32 {
+            let mut rho = 1.0;
+            for (kx, ky, kz, phase, amp) in &modes {
+                rho += amp * (kx * x + ky * y + kz * z + phase).sin();
+            }
+            rho.max(0.1) // Ensure positive
+        };
+        
+        // Find max density for rejection sampling
+        let mut max_rho: f32 = 0.0;
+        for _ in 0..1000 {
+            let x = rng.random::<f32>() * box_size;
+            let y = rng.random::<f32>() * box_size;
+            let z = rng.random::<f32>() * box_size;
+            max_rho = max_rho.max(density_at(x, y, z));
+        }
+        max_rho *= 1.2; // Safety margin
+        
+        // Rejection sampling: place particles according to density field
+        let mut attempts = 0;
+        let max_attempts = num_particles * 100;
+        
+        while self.particles.len() < num_particles && attempts < max_attempts {
+            let x = rng.random::<f32>() * box_size;
+            let y = rng.random::<f32>() * box_size;
+            let z = rng.random::<f32>() * box_size;
+            
+            let rho = density_at(x, y, z);
+            let accept_prob = rho / max_rho;
+            
+            if rng.random::<f32>() < accept_prob {
+                self.particles.push(Particle {
+                    position: [x, y, z],
+                    velocity: [
+                        (rng.random::<f32>() - 0.5) * 0.01,
+                        (rng.random::<f32>() - 0.5) * 0.01,
+                        (rng.random::<f32>() - 0.5) * 0.01,
+                    ],
+                    force: [0.0, 0.0, 0.0],
+                    mass: 1.0,
+                });
+            }
+            attempts += 1;
+        }
+        
+        // Fill remaining with uniform if rejection sampling didn't get enough
+        while self.particles.len() < num_particles {
+            self.particles.push(Particle {
+                position: [
+                    rng.random::<f32>() * box_size,
+                    rng.random::<f32>() * box_size,
+                    rng.random::<f32>() * box_size,
+                ],
+                velocity: [
+                    (rng.random::<f32>() - 0.5) * 0.01,
+                    (rng.random::<f32>() - 0.5) * 0.01,
+                    (rng.random::<f32>() - 0.5) * 0.01,
+                ],
+                force: [0.0, 0.0, 0.0],
+                mass: 1.0,
+            });
+        }
     }
 
     /// Kick-drift-kick leapfrog integration.

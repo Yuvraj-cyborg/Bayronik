@@ -17,22 +17,35 @@ pub fn run_simulation(
     projection_res: usize,
 ) -> Vec<f32> {
     let mut particles = ParticleSet::new();
-    particles.initialize_randomly(num_particles, box_size);
+    particles.initialize_grid_with_perturbations(num_particles, box_size);
     
     let mut grid = Grid::new(grid_resolution, box_size);
     let mut fft_solver = FftSolver::new(grid_resolution);
+    
+    // Add gravitational amplification factor to grow perturbations faster
+    let growth_factor = 2.5;
     
     for _ in 0..num_steps {
         grid.clear_density();
         gravity::assign_mass_cic(&particles, &mut grid);
         fft_solver.solve_potential(&mut grid);
         
-        let (fx, fy, fz) = forces::calculate_forces_from_potential(&grid);
+        let (mut fx, mut fy, mut fz) = forces::calculate_forces_from_potential(&grid);
+        
+        // Amplify gravitational forces to accelerate structure formation
+        for f in &mut fx { *f *= growth_factor; }
+        for f in &mut fy { *f *= growth_factor; }
+        for f in &mut fz { *f *= growth_factor; }
+        
         forces::interpolate_forces_to_particles(&mut particles, &grid, &fx, &fy, &fz);
         
         particles.integrate(time_step);
         
-        let (fx, fy, fz) = forces::calculate_forces_from_potential(&grid);
+        let (mut fx, mut fy, mut fz) = forces::calculate_forces_from_potential(&grid);
+        for f in &mut fx { *f *= growth_factor; }
+        for f in &mut fy { *f *= growth_factor; }
+        for f in &mut fz { *f *= growth_factor; }
+        
         forces::interpolate_forces_to_particles(&mut particles, &grid, &fx, &fy, &fz);
         particles.kick(time_step);
     }

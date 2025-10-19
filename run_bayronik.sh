@@ -4,7 +4,7 @@
 
 set -e  # Exit on error
 
-echo "nBayronik Baryonic Field Emulator"
+echo "Bayronik"
 echo "===================================="
 echo ""
 

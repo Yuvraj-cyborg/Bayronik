@@ -53,7 +53,7 @@ impl FftSolver {
         // Step 3: Apply the Green's function in Fourier space.
         // The potential_k = - density_k / (k^2)
         // We need to calculate the wave vector 'k' for each mode.
-        let n = self.resolution as f32;
+        let _n = self.resolution as f32;
         let k_factor = 2.0 * std::f32::consts::PI / grid.box_size;
 
         for i in 0..self.fft_buffer.len() {
@@ -94,9 +94,9 @@ impl FftSolver {
         // FFT frequencies need to be "shifted" to represent negative and positive frequencies.
         // For a dimension of size N, indices 0..N/2 correspond to positive frequencies,
         // and N/2..N-1 correspond to negative frequencies.
-        let kx = if ix > n / 2 { (ix as i32 - n as i32) } else { ix as i32 } as f32;
-        let ky = if iy > n / 2 { (iy as i32 - n as i32) } else { iy as i32 } as f32;
-        let kz = if iz > n / 2 { (iz as i32 - n as i32) } else { iz as i32 } as f32;
+        let kx = if ix > n / 2 { ix as i32 - n as i32 } else { ix as i32 } as f32;
+        let ky = if iy > n / 2 { iy as i32 - n as i32 } else { iy as i32 } as f32;
+        let kz = if iz > n / 2 { iz as i32 - n as i32 } else { iz as i32 } as f32;
 
         (kx * k_factor, ky * k_factor, kz * k_factor)
     }
