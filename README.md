@@ -33,7 +33,7 @@ Time integration (Kick–Drift–Kick):
 
 $$ \mathbf{v}^{n+1/2} = \mathbf{v}^n + \tfrac{\Delta t}{2} \mathbf{F}^n, \quad \mathbf{x}^{n+1} = \mathbf{x}^n + \Delta t,\mathbf{v}^{n+1/2}, \quad \mathbf{v}^{n+1} = \mathbf{v}^{n+1/2} + \tfrac{\Delta t}{2} \mathbf{F}^{n+1}. $$
 
-$$ Initial conditions are clustered by sampling particles from a Fourier-synthesized density field with amplitudes $ A_k \propto k^{-1/2} $ (a compact proxy for $P(k)$). We project to 2D surface density $\Sigma$ using Cloud-in-Cell (CIC), apply a stable log1p transform, and perform inference with a TorchScript U-Net. $$
+Initial conditions are clustered by sampling particles from a Fourier-synthesized density field with amplitudes $ A_k \propto k^{-1/2} $ (a compact proxy for $P(k)$). We project to 2D surface density $\Sigma$ using Cloud-in-Cell (CIC), apply a stable log1p transform, and perform inference with a TorchScript U-Net.
 
 ## Quick Start
 
