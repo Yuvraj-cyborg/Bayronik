@@ -18,11 +18,11 @@ Documentation:
 
 ```mermaid
 graph TD
-  A[bayronik-core (Rust)] -- PM N-body --> C[2D Σ_DM (NPY)]
-  B[bayronik-model (Python)] -- Train U-Net on CAMELS --> D[TorchScript (.pt)]
-  D -- tch-rs --> E[bayronik-infer (Rust TUI/CLI)]
+  A[bayronik-core Rust] -- PM N-body --> C[2D Σ_DM NPY]
+  B[bayronik-model Python] -- Train U-Net on CAMELS --> D[TorchScript .pt]
+  D -- tch-rs --> E[bayronik-infer Rust TUI/CLI]
   C --> E
-  E --> F[Heatmap rendering (Braille, color)]
+  E --> F[Heatmap rendering Braille color]
 ```
 
 Physics core (PM method):
