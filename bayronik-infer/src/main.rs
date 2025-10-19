@@ -63,7 +63,7 @@ impl App {
         let input_map = input_map_raw.log1p();
         let output_map = model.forward_ts(&[input_map.to(device)])?.to(Device::Cpu);
         
-        println!("✅ Ready! Use ← → arrows to navigate simulations");
+        println!("Ready! Use ← → arrows to navigate simulations");
         
         Ok(Self {
             input_map,

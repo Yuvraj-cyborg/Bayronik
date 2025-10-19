@@ -11,7 +11,6 @@ pub fn evolve_particles(particles: &mut ParticleSet, time_step: f32) {
     // This is a simplified KDK. A full implementation would split the kicks.
     // For our purposes, this Euler-Cromer style integration is a good start.
     for p in &mut particles.particles {
-        // --- KICK ---
         // Update velocity based on force (F=ma => a=F/m)
         let acceleration = [
             p.force[0] / p.mass,

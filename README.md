@@ -1,207 +1,140 @@
-# Bayronik: Baryonic Field Emulator for Weak Lensing
+# Bayronik: Field-Level Baryonic Emulator for Weak Lensing
 
-A high-performance, multi-fidelity field-level emulator that generates realistic 2D convergence (κ) maps including baryonic effects, without running expensive hydrodynamic simulations.
+High-performance, multi-fidelity emulation of baryonic effects directly at the map level. Bayronik couples a Rust N-body particle–mesh (PM) simulator with a PyTorch U-Net, delivering realistic 2D matter maps without running full hydrodynamics.
 
-## Scientific Goal
+![license](https://img.shields.io/badge/license-MIT-blue.svg)
+![rust](https://img.shields.io/badge/Rust-stable-%23dea584)
+![python](https://img.shields.io/badge/Python-3.9%2B-%233776AB)
 
-Baryonic feedback (AGN, supernovae) redistributes matter on ~kpc–Mpc scales and biases weak-lensing cosmology. **Bayronik** emulates these effects instantly using machine learning, enabling:
-- Fast forward modeling for likelihood-free inference
-- Survey forecasts and instrument studies  
-- Field-level analysis (peaks, Minkowski functionals, higher-order moments)
+## Overview
 
-### Why Field-Level?
-Summary statistics (power spectra) discard information. Field-level emulators produce maps compatible with many statistics and can be forward-modeled into realistic observations.
+Bayronik targets the dominant systematics in weak-lensing analyses: baryonic feedback (AGN, supernovae) redistributing mass on kpc–Mpc scales. It provides fast, field-level corrections by learning a mapping from gravity-only fields to total-matter fields. This enables forward modeling, survey forecasts, and the use of higher-order map statistics beyond the power spectrum.
 
-### Documentation
-- **[GUIDE.md](GUIDE.md)** - Complete TUI visualization guide (how to read colors, statistics, physics)
-- **[README.md](README.md)** - This file (setup, architecture, data access)
+Documentation:
+- GUIDE: see [GUIDE.md](GUIDE.md) for the TUI visualization guide
+- This README: setup, architecture, and data access
 
-## Project Structure
+## Architecture
 
+```mermaid
+graph TD
+  A[bayronik-core (Rust)] -- PM N-body → C[2D Σ_DM (NPY)]
+  B[bayronik-model (Python)] -- Train U-Net on CAMELS → D[TorchScript (.pt)]
+  D -- tch-rs → E[bayronik-infer (Rust TUI/CLI)]
+  C --> E
+  E --> F[Heatmap rendering (Braille, color)]
 ```
-bayronik/
-├── bayronik-core/      # Rust N-body simulation (gravity-only, PM method)
-├── bayronik-infer/     # Rust TUI/CLI for inference with trained models
-├── bayronik-model/     # Python ML training pipeline (PyTorch U-Net)
-└── README.md
-```
 
-##  Quick Start
+Physics core (PM method):
 
-### Prerequisites
+\[ \nabla^2 \phi = 4\pi G\, \rho, \qquad \mathbf{F} = -\nabla \phi \]
 
-- **Rust** (1.70+): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- **Python** (3.9+) with PyTorch
-- **LibTorch** (for Rust inference): Provided via PyTorch
+Time integration (Kick–Drift–Kick):
 
-### Installation
+\[ \mathbf{v}^{n+1/2} = \mathbf{v}^n + \tfrac{\Delta t}{2} \mathbf{F}^n, \quad \mathbf{x}^{n+1} = \mathbf{x}^n + \Delta t\,\mathbf{v}^{n+1/2}, \quad \mathbf{v}^{n+1} = \mathbf{v}^{n+1/2} + \tfrac{\Delta t}{2} \mathbf{F}^{n+1}. \]
 
+Initial conditions are clustered by sampling particles from a Fourier-synthesized density field with amplitudes \( A_k \propto k^{-1/2} \) (a compact proxy for \(P(k)\)). We project to 2D surface density \(\Sigma\) using Cloud-in-Cell (CIC), apply a stable log1p transform, and perform inference with a TorchScript U-Net.
+
+## Quick Start
+
+Prerequisites:
+- Rust (1.70+)
+- Python 3.9+ with PyTorch
+- LibTorch available via the installed PyTorch (used by tch-rs)
+
+Install and prepare:
 ```bash
-# Clone the repository
+# Clone
 git clone https://github.com/yourusername/bayronik.git
 cd bayronik
 
-# Set up Python environment
+# Python env for training and LibTorch
 cd bayronik-model
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
-
-# Download CAMELS data (see Data Access section)
-cd data/
-# Place your .npy or .hdf5 files here
 ```
 
-### Training the Emulator
-
+Train and export the model (optional if you already have weights):
 ```bash
 cd bayronik-model
 source .venv/bin/activate
 python train.py
-
-# Export to TorchScript for Rust inference
-python exporter.py
+python exporter.py  # produces weights/traced_unet_model.pt
 ```
 
-### Running the TUI Inference Tool
-
+Run the TUI (inference and visualization):
 ```bash
-cd ../bayronik-infer
-
-# Activate Python env (needed for LibTorch)
+cd bayronik-infer
 source ../bayronik-model/.venv/bin/activate
-
-# Set environment variables
-export DYLD_LIBRARY_PATH=$(python -c "import torch; import os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
+export DYLD_LIBRARY_PATH=$(python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
 export LIBTORCH_USE_PYTORCH=1
-
-# Build and run
-cargo build --release
 cargo run --release
 ```
 
-**Or use the launch script**:
+Alternatively, use the launcher:
 ```bash
-cd ~/Projects/bayronik
 ./run_bayronik.sh
 ```
 
-**Interactive controls**:
-- `→` or `n` - Next simulation
-- `←` or `p` - Previous simulation  
-- `r` - Random simulation
-- `q` - Quit
+TUI controls:
+- Right/Left arrows or n/p: navigate simulations
+- r: random sample
+- g: generate on-the-fly N-body map (bayronik-core)
+- c: switch back to CAMELS maps
+- q: quit
 
-** [Complete TUI Guide →](GUIDE.md)** - Learn how to interpret the visualizations!
+## Data
+
+Primary training/inference inputs are 2D projected maps in NPY format from CAMELS (IllustrisTNG suite). Place files under `bayronik-model/data/`:
+- `Maps_Mcdm_IllustrisTNG_*_z=0.00.npy` (dark matter)
+- `Maps_Mtot_IllustrisTNG_*_z=0.00.npy` (total matter)
+
+You may optionally use 3D hydrodynamical snapshots (HDF5) from the data portals when you need custom projections or power-spectrum calibration. Reference: IllustrisTNG Project [tng-project.org](https://www.tng-project.org/).
+
+## Physics and Numerics
+
+- Mass assignment: CIC to grid nodes.
+- Poisson solver: FFT in k-space, \( \hat{\phi}(\mathbf{k}) = -\hat{\delta}(\mathbf{k}) / k^2 \).
+- Forces: centered differences, with a tunable growth amplification to mimic late-time structure formation.
+- Integrator: symplectic Kick–Drift–Kick with periodic boundaries.
+- Projection: 3D → 2D via CIC along the line of sight.
+
+We stabilize the dynamic range using \( \log(1 + \Sigma) \) and match global statistics (mean/variance) to CAMELS to keep inference in-distribution.
+
+## Visualization
+
+The TUI renders high-fidelity heatmaps using Unicode Braille characters (8× subcell resolution) and a perceptually tuned blue→red gradient. Three synchronized panels are shown: input (gravity-only), output (total matter), and baryonic residual \(\Delta\). The title bars display live statistics (mean, standard deviation, min, max).
+
+## Repository Layout
+
+```
+bayronik/
+├── bayronik-core/      # Rust N-body (PM): CIC, FFT Poisson, KDK
+├── bayronik-infer/     # Rust TUI/CLI: tch-rs inference, heatmaps
+├── bayronik-model/     # Python training: U-Net, export to TorchScript
+└── GUIDE.md            # TUI visualization guide
 ```
 
-**Pro tip**: Create an alias in your shell:
-```bash
-alias bayronik-infer='cd bayronik/bayronik-infer && source ../bayronik-model/.venv/bin/activate && export DYLD_LIBRARY_PATH=$(python -c "import torch; import os; print(os.path.join(os.path.dirname(torch.__file__), \"lib\"))") && export LIBTORCH_USE_PYTORCH=1 && cargo run --release'
-```
+## References
 
-## Data Access
+- CAMELS dataset: Villaescusa-Navarro et al., 2022 (arXiv:2109.10915)
+- Field-level emulation: Jamieson et al., 2022 (arXiv:2207.05202)
+- Baryonic corrections: Sharma et al., 2023 (MNRAS 526, 3396)
+- Multi-fidelity ML: Ho et al., 2021 (arXiv:2105.01081)
+- IllustrisTNG Project: [tng-project.org](https://www.tng-project.org/)
 
-### CAMELS Multifield Dataset (CMD)
-
-Official documentation: https://camels.readthedocs.io/
-
-**Current setup** (NPY files):
-- Download from: https://camels-multifield-dataset.readthedocs.io/
-- Place in `bayronik-model/data/`:
-  - `Maps_Mcdm_IllustrisTNG_CV_z=0.00.npy` (Dark matter)
-  - `Maps_Mtot_IllustrisTNG_CV_z=0.00.npy` (Total matter)
-
-**Recommended** (HDF5 format - smaller, faster):
-```bash
-# Request access at: https://camels.readthedocs.io/en/latest/data_access.html
-cd bayronik-model/data
-wget --user=<username> --password=<password> \
-  https://users.flatironinstitute.org/~fvillaescusa/priv/CMD_IllustrisTNG/Maps_*_CV_z=0.00.hdf5
-```
-
-## Architecture Details
-
-### bayronik-model (Python)
-- **Model**: U-Net (encoder-decoder with skip connections)
-- **Input**: Dark matter 2D projected maps (256×256)
-- **Output**: Total matter maps (including baryons)
-- **Training**: MSE loss, Adam optimizer, W&B logging
-- **Export**: TorchScript (.pt) for Rust interop
-
-### bayronik-infer (Rust)
-- **Purpose**: Fast inference and visualization
-- **Features**:
-  - Load TorchScript models via `tch-rs`
-  - ASCII heatmap visualization in terminal
-  - Planned: Parameter controls, power spectrum plots
-- **Performance**: <1s per map on CPU
-
-### bayronik-core (Rust)
-- **Purpose**: Generate cheap gravity-only fields for multi-fidelity training
-- **Method**: Particle-Mesh N-body simulation
-- **Features**:
-  - FFT-based Poisson solver (3D)
-  - Periodic boundary conditions
-  - Planned: Cosmological integration, ICs from P(k)
-
-## 🔬 Current Status (v0.1.0-alpha)
-
-### ✅ Working
-- [x] Basic U-Net training on CAMELS data
-- [x] TorchScript export
-- [x] Rust inference with TUI
-- [x] ASCII visualization
-
-### 🚧 In Progress
-- [ ] Validation loop and metrics
-- [ ] Parameter conditioning (Ωₘ, σ₈, A_AGN, etc.)
-- [ ] HDF5 data loader
-- [ ] Power spectrum computation
-- [ ] Better visualization (color gradients)
-
-### 📋 Planned
-- [ ] Multi-fidelity training (gravity-only + hydro residual)
-- [ ] Uncertainty quantification
-- [ ] Cosmological N-body improvements
-- [ ] Python bindings (PyO3)
-- [ ] WASM demo website
-- [ ] Docker container
-
-## 🤝 Contributing
-
-This is an active research project. Contributions welcome!
-
-Areas for improvement:
-1. Multi-field inputs (gas, stars, not just dark matter)
-2. Conditional generation (vary cosmo/baryon params)
-3. Validation metrics (power spectrum comparison, peak counts)
-4. Better visualizations
-5. Documentation and examples
-
-## 📖 References
-
-Key papers that inspired this work:
-
-- [CAMELS Dataset](https://arxiv.org/abs/2109.10915): Villaescusa-Navarro et al. (2022)
-- [Field-Level Emulation](https://arxiv.org/abs/2207.05202): Jamieson et al. (2022)
-- [Baryonic Corrections](https://academic.oup.com/mnras/article/526/3/3396/7280363): Sharma et al. (2023)
-- [Multi-Fidelity ML](https://arxiv.org/abs/2105.01081): Ho et al. (2021)
-
-## 📄 License
+## License
 
 MIT License
 
 ## Acknowledgments
 
-- **CAMELS Collaboration** for simulation data
-- **Flatiron Institute** for hosting the dataset
-- **tch-rs** for PyTorch-Rust bindings
-- **ratatui** for terminal UI framework
+- CAMELS Collaboration and the Flatiron Institute
+- IllustrisTNG team for public data and documentation
+- tch-rs and ratatui projects
 
----
-
-**Status**: Research prototype (v0.1.0-alpha)  
-**Contact**: yuvrajbiswalofficial@gmail.com
-**Last updated**: October 2025
+Status: research prototype (v0.1.0-alpha)  
+Contact: yuvrajbiswalofficial@gmail.com  
+Last updated: October 2025
 
