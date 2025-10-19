@@ -25,7 +25,7 @@ graph TD
   E --> F[Heatmap rendering Braille color]
 ```
 
-Physics core (PM method):
+Guiding principles (equations):
 
 $$ \nabla^2 \phi = 4\pi G, \rho, \qquad \mathbf{F} = -\nabla \phi $$
 
