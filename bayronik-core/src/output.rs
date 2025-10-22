@@ -1,6 +1,8 @@
 use ndarray::Array2;
 use std::fs::File;
-use std::io::Write;
+use crate::sim::particle::ParticleSet;
+use std::io::{self, Write};
+use std::path::Path;
 
 /// Save 2D map to NPY format compatible with Python/NumPy.
 pub fn save_map_npy(map: &[f32], resolution: usize, path: &str) -> anyhow::Result<()> {
@@ -22,3 +24,19 @@ pub fn save_map_txt(map: &[f32], resolution: usize, path: &str) -> std::io::Resu
     Ok(())
 }
 
+/// Saves the positions of all particles to a simple CSV file.
+/// Each line will contain the x, y, and z coordinates of a particle.
+pub fn save_particle_positions(particles: &ParticleSet, filepath: &str) -> io::Result<()> {
+    let path = Path::new(filepath);
+    let mut file = File::create(&path)?;
+
+    // Write a header (optional, but good practice)
+    writeln!(file, "x,y,z")?;
+
+    // Write each particle's position
+    for p in &particles.particles {
+        writeln!(file, "{},{},{}", p.position[0], p.position[1], p.position[2])?;
+    }
+
+    Ok(())
+}
