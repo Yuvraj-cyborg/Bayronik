@@ -16,7 +16,7 @@ fn main() {
     const NUM_STEPS: usize = 10;
 
     let mut particles = ParticleSet::new();
-    particles.initialize_grid_with_perturbations(NUM_PARTICLES, BOX_SIZE);
+    particles.initialize_zeldovich(NUM_PARTICLES, BOX_SIZE);
     println!(
         "Initialized {} particles in {}^3 Mpc/h box",
         NUM_PARTICLES, BOX_SIZE
