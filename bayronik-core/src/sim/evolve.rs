@@ -22,7 +22,7 @@ pub fn evolve_particles(particles: &mut ParticleSet, time_step: f32) {
         p.velocity[1] += acceleration[1] * time_step;
         p.velocity[2] += acceleration[2] * time_step;
 
-        // --- DRIFT ---
+        // Drift Calculation
         // Update position based on new velocity
         p.position[0] += p.velocity[0] * time_step;
         p.position[1] += p.velocity[1] * time_step;
