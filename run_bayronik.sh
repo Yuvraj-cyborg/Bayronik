@@ -16,15 +16,15 @@ echo " Activating Python environment..."
 source bayronik-model/.venv/bin/activate
 
 # Set LibTorch paths
-echo "🔧 Configuring LibTorch..."
+echo "Configuring LibTorch..."
 export DYLD_LIBRARY_PATH=$(python -c "import torch; import os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
 export LIBTORCH_USE_PYTORCH=1
 
-echo "✓ Environment ready"
+echo "Environment ready"
 echo ""
 
 # Run the TUI
-echo "🎨 Launching TUI..."
+echo "Launching TUI..."
 echo "   Press 'q' to quit"
 echo ""
 
