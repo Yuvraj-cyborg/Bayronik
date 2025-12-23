@@ -40,7 +40,7 @@ impl ParticleSet {
 
         // Generate Gaussian random field in real space, then FFT to get density_k
         let mut density = vec![Complex::new(0.0, 0.0); num_particles];
-        
+
         // Initialize with Gaussian random values
         let normal = Normal::new(0.0, 1.0).unwrap();
         for val in &mut density {
@@ -89,17 +89,32 @@ impl ParticleSet {
         // Now density contains density_k in Fourier space
         // Apply power spectrum weighting P(k) ~ k^(-1.5) for CDM-like clustering
         let k_fundamental = 2.0 * std::f32::consts::PI / box_size;
-        
+
         for ix in 0..n {
             for iy in 0..n {
                 for iz in 0..n {
-                    let kx = if ix > n / 2 { ix as i32 - n as i32 } else { ix as i32 } as f32 * k_fundamental;
-                    let ky = if iy > n / 2 { iy as i32 - n as i32 } else { iy as i32 } as f32 * k_fundamental;
-                    let kz = if iz > n / 2 { iz as i32 - n as i32 } else { iz as i32 } as f32 * k_fundamental;
-                    
+                    let kx = if ix > n / 2 {
+                        ix as i32 - n as i32
+                    } else {
+                        ix as i32
+                    } as f32
+                        * k_fundamental;
+                    let ky = if iy > n / 2 {
+                        iy as i32 - n as i32
+                    } else {
+                        iy as i32
+                    } as f32
+                        * k_fundamental;
+                    let kz = if iz > n / 2 {
+                        iz as i32 - n as i32
+                    } else {
+                        iz as i32
+                    } as f32
+                        * k_fundamental;
+
                     let k_mag_sq = kx * kx + ky * ky + kz * kz;
                     let idx = (ix * n + iy) * n + iz;
-                    
+
                     if k_mag_sq < 1e-6 {
                         // DC mode: set to zero (no mean overdensity)
                         density[idx] = Complex::new(0.0, 0.0);
@@ -120,13 +135,28 @@ impl ParticleSet {
         for ix in 0..n {
             for iy in 0..n {
                 for iz in 0..n {
-                    let kx = if ix > n / 2 { ix as i32 - n as i32 } else { ix as i32 } as f32 * k_fundamental;
-                    let ky = if iy > n / 2 { iy as i32 - n as i32 } else { iy as i32 } as f32 * k_fundamental;
-                    let kz = if iz > n / 2 { iz as i32 - n as i32 } else { iz as i32 } as f32 * k_fundamental;
-                    
+                    let kx = if ix > n / 2 {
+                        ix as i32 - n as i32
+                    } else {
+                        ix as i32
+                    } as f32
+                        * k_fundamental;
+                    let ky = if iy > n / 2 {
+                        iy as i32 - n as i32
+                    } else {
+                        iy as i32
+                    } as f32
+                        * k_fundamental;
+                    let kz = if iz > n / 2 {
+                        iz as i32 - n as i32
+                    } else {
+                        iz as i32
+                    } as f32
+                        * k_fundamental;
+
                     let k_mag_sq = kx * kx + ky * ky + kz * kz;
                     let idx = (ix * n + iy) * n + iz;
-                    
+
                     if k_mag_sq > 1e-6 {
                         let factor = Complex::new(0.0, -1.0) / k_mag_sq; // -i/k² (note sign for IFFT convention)
                         disp_x[idx] = density[idx] * kx * factor;
@@ -188,7 +218,7 @@ impl ParticleSet {
             for iy in 0..n {
                 for iz in 0..n {
                     let idx = (ix * n + iy) * n + iz;
-                    
+
                     // Lagrangian position (regular grid)
                     let q = [
                         (ix as f32 + 0.5) * cell_size,

@@ -1,6 +1,6 @@
+use crate::sim::particle::ParticleSet;
 use ndarray::Array2;
 use std::fs::File;
-use crate::sim::particle::ParticleSet;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -15,7 +15,8 @@ pub fn save_map_npy(map: &[f32], resolution: usize, path: &str) -> anyhow::Resul
 pub fn save_map_txt(map: &[f32], resolution: usize, path: &str) -> std::io::Result<()> {
     let mut file = File::create(path)?;
     for row in map.chunks(resolution) {
-        let line = row.iter()
+        let line = row
+            .iter()
             .map(|v| format!("{:.6e}", v))
             .collect::<Vec<_>>()
             .join(" ");
@@ -35,7 +36,11 @@ pub fn save_particle_positions(particles: &ParticleSet, filepath: &str) -> io::R
 
     // Write each particle's position
     for p in &particles.particles {
-        writeln!(file, "{},{},{}", p.position[0], p.position[1], p.position[2])?;
+        writeln!(
+            file,
+            "{},{},{}",
+            p.position[0], p.position[1], p.position[2]
+        )?;
     }
 
     Ok(())

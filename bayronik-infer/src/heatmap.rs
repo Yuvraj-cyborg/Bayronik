@@ -101,7 +101,11 @@ impl Widget for HeatmapWidget<'_> {
 
         let data_min = data.iter().cloned().fold(f64::INFINITY, f64::min);
         let data_max = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let range = if data_max > data_min { data_max - data_min } else { 1.0 };
+        let range = if data_max > data_min {
+            data_max - data_min
+        } else {
+            1.0
+        };
 
         const BRAILLE: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
 
@@ -127,7 +131,7 @@ impl Widget for HeatmapWidget<'_> {
                 }
 
                 let ch = char::from_u32(braille_char).unwrap_or('?');
-                    let color = {
+                let color = {
                     let mut sum = 0.0;
                     let mut count = 0;
                     for dot_y in 0..4 {
@@ -160,12 +164,9 @@ impl Widget for HeatmapWidget<'_> {
                 let screen_y = inner_area.y + cell_y;
 
                 if screen_x < area.right() && screen_y < area.bottom() {
-                    buf[(screen_x, screen_y)]
-                        .set_char(ch)
-                        .set_fg(color);
+                    buf[(screen_x, screen_y)].set_char(ch).set_fg(color);
                 }
             }
         }
     }
 }
-

@@ -68,7 +68,7 @@ impl FftSolver {
                 self.fft_buffer[i] = Complex::new(0.0, 0.0);
             }
         }
-        
+
         // The Nyquist frequency requires special handling in some FFT schemes,
         // but for our purposes, this approximation is sufficient.
 
@@ -94,11 +94,22 @@ impl FftSolver {
         // FFT frequencies need to be "shifted" to represent negative and positive frequencies.
         // For a dimension of size N, indices 0..N/2 correspond to positive frequencies,
         // and N/2..N-1 correspond to negative frequencies.
-        let kx = if ix > n / 2 { ix as i32 - n as i32 } else { ix as i32 } as f32;
-        let ky = if iy > n / 2 { iy as i32 - n as i32 } else { iy as i32 } as f32;
-        let kz = if iz > n / 2 { iz as i32 - n as i32 } else { iz as i32 } as f32;
+        let kx = if ix > n / 2 {
+            ix as i32 - n as i32
+        } else {
+            ix as i32
+        } as f32;
+        let ky = if iy > n / 2 {
+            iy as i32 - n as i32
+        } else {
+            iy as i32
+        } as f32;
+        let kz = if iz > n / 2 {
+            iz as i32 - n as i32
+        } else {
+            iz as i32
+        } as f32;
 
         (kx * k_factor, ky * k_factor, kz * k_factor)
     }
 }
-

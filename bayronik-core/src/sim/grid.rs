@@ -34,4 +34,3 @@ impl Grid {
         self.density_contrast.iter_mut().for_each(|d| *d = 0.0);
     }
 }
-

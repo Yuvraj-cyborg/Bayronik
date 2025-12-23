@@ -102,19 +102,23 @@ impl App {
         let camels_ref = &self.all_input_maps[..256 * 256];
         let camels_log: Vec<f32> = camels_ref.iter().map(|&x| (x + 1.0).ln()).collect();
         let camels_log_mean = camels_log.iter().sum::<f32>() / camels_log.len() as f32;
-        let camels_log_std = (camels_log.iter()
+        let camels_log_std = (camels_log
+            .iter()
             .map(|&x| (x - camels_log_mean).powi(2))
-            .sum::<f32>() / camels_log.len() as f32)
+            .sum::<f32>()
+            / camels_log.len() as f32)
             .sqrt();
 
         // Apply log1p to N-body data
         let mut nbody_log: Vec<f32> = nbody_map.iter().map(|&x| (x.max(0.0) + 1.0).ln()).collect();
-        
+
         // Match statistics in log-space (where the model operates)
         let nbody_log_mean = nbody_log.iter().sum::<f32>() / nbody_log.len() as f32;
-        let nbody_log_std = (nbody_log.iter()
+        let nbody_log_std = (nbody_log
+            .iter()
             .map(|&x| (x - nbody_log_mean).powi(2))
-            .sum::<f32>() / nbody_log.len() as f32)
+            .sum::<f32>()
+            / nbody_log.len() as f32)
             .sqrt();
 
         // Standardize N-body log-space to match CAMELS log-space

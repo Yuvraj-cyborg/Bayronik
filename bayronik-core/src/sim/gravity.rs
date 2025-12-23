@@ -49,8 +49,8 @@ pub fn assign_mass_cic(particles: &ParticleSet, grid: &mut Grid) {
         // We use isize and the modulo operator `%` to wrap around the grid edges.
         let n_isize = n as isize;
         let idx = |x: isize, y: isize, z: isize| {
-            (((x.rem_euclid(n_isize)) * n_isize + y.rem_euclid(n_isize)) * n_isize + z.rem_euclid(n_isize))
-                as usize
+            (((x.rem_euclid(n_isize)) * n_isize + y.rem_euclid(n_isize)) * n_isize
+                + z.rem_euclid(n_isize)) as usize
         };
 
         grid.density_contrast[idx(i, j, k)] += p.mass * w_000;
