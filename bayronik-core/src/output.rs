@@ -29,7 +29,7 @@ pub fn save_map_txt(map: &[f32], resolution: usize, path: &str) -> std::io::Resu
 /// Each line will contain the x, y, and z coordinates of a particle.
 pub fn save_particle_positions(particles: &ParticleSet, filepath: &str) -> io::Result<()> {
     let path = Path::new(filepath);
-    let mut file = File::create(&path)?;
+    let mut file = File::create(path)?;
 
     // Write a header (optional, but good practice)
     writeln!(file, "x,y,z")?;
