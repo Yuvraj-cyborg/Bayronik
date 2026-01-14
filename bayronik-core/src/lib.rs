@@ -1,3 +1,54 @@
+//! # Bayronik Core
+//!
+//! A high-performance N-body Particle-Mesh (PM) simulation engine for cosmological
+//! structure formation, designed to solve the baryonic feedback problem in weak lensing.
+//!
+//! ## Overview
+//!
+//! Bayronik addresses a critical efficiency bottleneck in modern cosmology: precision
+//! measurements of universe parameters (Dark Matter density Ωm, clumpiness σ8) rely on
+//! weak gravitational lensing, but are systematically biased by "baryonic physics"—messy,
+//! non-gravitational processes like supernova explosions and AGN feedback that violently
+//! redistribute gas and matter on large scales.
+//!
+//! ## Architecture
+//!
+//! The engine implements a classic PM N-body scheme:
+//!
+//! 1. **Mass Assignment**: Particles deposit mass onto a 3D grid using Cloud-in-Cell (CIC)
+//!    interpolation for smooth density fields
+//! 2. **Poisson Solver**: FFT-based gravity solver computes potential φ where ∇²φ = 4πGρ
+//! 3. **Force Calculation**: Forces derived via finite differences F = -∇φ
+//! 4. **Time Integration**: Symplectic Kick-Drift-Kick leapfrog with periodic boundaries
+//! 5. **Projection**: 3D → 2D surface density maps via CIC for weak lensing analysis
+//!
+//! ## Initial Conditions
+//!
+//! Supports Zel'dovich approximation for cosmologically-motivated initial conditions,
+//! generating correlated particle displacements from a Gaussian random field with
+//! CDM-like power spectrum P(k) ~ k^(-1.5).
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use bayronik_core::{run_simulation, ParticleSet, Grid, FftSolver};
+//!
+//! // Run a complete simulation
+//! let map = run_simulation(
+//!     32_768,  // num_particles (ignored with Zel'dovich ICs)
+//!     64,      // grid_resolution (also sets IC grid)
+//!     100.0,   // box_size in Mpc/h
+//!     0.01,    // time_step
+//!     100,     // num_steps
+//!     256,     // output projection resolution
+//! );
+//! ```
+//!
+//! ## Physics References
+//!
+//! - Hockney & Eastwood (1988) - Computer Simulation Using Particles
+//! - Zel'dovich (1970) - Gravitational instability approximation
+
 pub mod output;
 pub mod sim;
 
