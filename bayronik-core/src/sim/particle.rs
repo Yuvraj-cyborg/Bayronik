@@ -15,6 +15,12 @@ pub struct ParticleSet {
     pub box_size: f32,
 }
 
+impl Default for ParticleSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ParticleSet {
     pub fn new() -> Self {
         Self {
@@ -272,14 +278,14 @@ impl ParticleSet {
         let mut modes = Vec::new();
 
         for i in 1..=n_modes {
-            let k = (i as f32) * 2.0 * 3.14159 / box_size;
+            let k = (i as f32) * 2.0 * std::f32::consts::PI / box_size;
             let amplitude = 1.0 / (i as f32).sqrt(); // P(k) ~ k^(-1/2) approximation
 
             for _ in 0..3 {
                 let kx = k * (rng.random::<f32>() * 2.0 - 1.0);
                 let ky = k * (rng.random::<f32>() * 2.0 - 1.0);
                 let kz = k * (rng.random::<f32>() * 2.0 - 1.0);
-                let phase = rng.random::<f32>() * 6.28318;
+                let phase = rng.random::<f32>() * std::f32::consts::TAU;
                 modes.push((kx, ky, kz, phase, amplitude));
             }
         }
