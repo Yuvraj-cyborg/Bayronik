@@ -1,131 +1,161 @@
+#!/usr/bin/env python3
+"""
+Training script for baryonic feedback emulation.
+
+Usage:
+    python train.py --dataset CV --epochs 20
+    python train.py --dataset LH --model attention --mmap --epochs 50
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
-import os
-import wandb
+from tqdm import tqdm
 
-# Import our custom modules
-import config
-from scripts.dataset import CAMELSDataset
-from scripts.model import UNet
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+from bayronik_model import UNet, ResUNet, AttentionUNet, CAMELSDataset
 
-def train_model():
-    """Main function to orchestrate the model training process."""
-    wandb.init(
-        project="bayronik-emulator",
-        config={
-            "learning_rate": config.LEARNING_RATE,
-            "architecture": "U-Net",
-            "dataset": f"{config.SUITE}-{config.DATASET_TYPE}",
-            "epochs": config.NUM_EPOCHS,
-            "batch_size": config.BATCH_SIZE,
-        }
+
+MODELS = {
+    "unet": UNet,
+    "resunet": ResUNet,
+    "attention": AttentionUNet,
+}
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def train(args):
+    device = get_device()
+    print(f"Device: {device}")
+    
+    weights_dir = Path(args.weights_dir)
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Data
+    dataset = CAMELSDataset(
+        data_dir=args.data_dir,
+        dataset_type=args.dataset,
+        mmap=args.mmap,
     )
-    print(f"--- Starting Training on {config.DEVICE} ---")
-    print("--- Weights & Biases tracking is enabled ---")
-
-    # 1. Load Data
-    print("Loading dataset...")
-    full_dataset = CAMELSDataset(
-        root_dir=config.DATA_DIR,
-        suite=config.SUITE,
-        dataset_type=config.DATASET_TYPE
-    )
-    val_size = int(len(full_dataset) * 0.1)
-    train_size = len(full_dataset) - val_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    
+    val_size = int(len(dataset) * 0.15)
+    train_size = len(dataset) - val_size
+    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+    
+    print(f"Dataset: {args.dataset} ({train_size} train, {val_size} val)")
+    
     train_loader = DataLoader(
-        train_dataset, batch_size=config.BATCH_SIZE, num_workers=config.NUM_WORKERS, shuffle=True
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.workers, pin_memory=(device.type == "cuda"),
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=config.BATCH_SIZE, num_workers=config.NUM_WORKERS, shuffle=False
+        val_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=(device.type == "cuda"),
     )
-    print(f"Data loaded. Training size: {train_size}, Validation size: {val_size}")
-
-    # 2. Initialize Model, Loss, and Optimizer
-    model = UNet(n_channels=1, n_classes=1).to(config.DEVICE)
-    loss_fn = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
-
-    # 3. Training Loop with Validation
-    print("\n--- Entering Training Loop ---")
-    best_val_loss = float('inf')
     
-    for epoch in range(config.NUM_EPOCHS):
-        # --- Training Phase ---
+    # Model
+    Model = MODELS[args.model]
+    model = Model(in_channels=1, out_channels=1).to(device)
+    
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: {args.model} ({num_params:,} params)")
+    
+    if args.resume:
+        model.load_state_dict(torch.load(args.resume, map_location=device))
+        print(f"Resumed from: {args.resume}")
+    
+    criterion = nn.MSELoss()
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    
+    # Training
+    best_val_loss = float("inf")
+    model_path = weights_dir / f"best_{args.model}_{args.dataset}.pth"
+    
+    for epoch in range(args.epochs):
         model.train()
-        running_loss = 0.0
-        for data, targets in train_loader:
-            data = data.to(config.DEVICE)
-            targets = targets.to(config.DEVICE)
-            predictions = model(data)
-            loss = loss_fn(predictions, targets)
+        train_loss = 0.0
+        
+        for inp, tgt in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=False):
+            inp, tgt = inp.to(device), tgt.to(device)
+            
             optimizer.zero_grad()
+            pred = model(inp)
+            loss = criterion(pred, tgt)
             loss.backward()
             optimizer.step()
-            running_loss += loss.item()
-        avg_train_loss = running_loss / len(train_loader)
+            
+            train_loss += loss.item()
         
-        # --- Validation Phase ---
+        train_loss /= len(train_loader)
+        scheduler.step()
+        
+        # Validation
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for data, targets in val_loader:
-                data = data.to(config.DEVICE)
-                targets = targets.to(config.DEVICE)
-                predictions = model(data)
-                loss = loss_fn(predictions, targets)
-                val_loss += loss.item()
-        avg_val_loss = val_loss / len(val_loader)
+            for inp, tgt in val_loader:
+                inp, tgt = inp.to(device), tgt.to(device)
+                val_loss += criterion(model(inp), tgt).item()
+        val_loss /= len(val_loader)
         
-        # --- Logging ---
-        print(f"Epoch {epoch+1}/{config.NUM_EPOCHS} -> Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
-        wandb.log({
-            "epoch": epoch + 1, 
-            "train_loss": avg_train_loss,
-            "val_loss": avg_val_loss
-        })
+        improved = ""
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            model.cpu()
+            torch.save(model.state_dict(), model_path)
+            model.to(device)
+            improved = " *"
         
-        # --- Save Best Model ---
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            best_model_path = os.path.join(config.WEIGHTS_DIR, f"best_{config.MODEL_NAME}")
-            os.makedirs(config.WEIGHTS_DIR, exist_ok=True)
-            torch.save(model.state_dict(), best_model_path)
-            print(f"  ✓ New best model saved (val_loss: {avg_val_loss:.6f})")
-
-    print("\n--- Training Finished ---")
-    print("--- Proceeding to save model weights. ---")
-
-    try:
-        # --- Save the final model weights ---
-        print("Step 1: Creating weights directory (if it doesn't exist)...")
-        os.makedirs(config.WEIGHTS_DIR, exist_ok=True)
-        
-        model_path = os.path.join(config.WEIGHTS_DIR, config.MODEL_NAME)
-        print(f"Step 2: Preparing to save model to: {model_path}")
-        
-        # --- THE FIX: Move model to CPU before saving ---
-        print("Step 3: Moving model to CPU for safe saving...")
-        model.to("cpu")
-        
-        torch.save(model.state_dict(), model_path)
-        
-        print("Step 4: torch.save command executed successfully.")
-        print(f"Model saved to {model_path}")
-
-    except Exception as e:
-        print("\n---! AN ERROR OCCURRED DURING SAVING !---")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {e}")
-        print("The model was NOT saved.")
+        lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1:3d} | train {train_loss:.6f} | val {val_loss:.6f} | lr {lr:.2e}{improved}")
     
-    # --- Finalize W&B run ---
-    print("\nFinalizing Weights & Biases run...")
-    wandb.finish()
-    print("W&B run finished.")
+    # Export
+    print(f"\nBest val loss: {best_val_loss:.6f}")
+    print(f"Weights: {model_path}")
+    
+    model.cpu()
+    model.load_state_dict(torch.load(model_path))
+    model.eval()
+    
+    traced = torch.jit.trace(model, torch.randn(1, 1, 256, 256))
+    ts_path = weights_dir / f"traced_{args.model}_{args.dataset}.pt"
+    traced.save(str(ts_path))
+    print(f"TorchScript: {ts_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="CV", choices=["CV", "LH"])
+    parser.add_argument("--model", type=str, default="unet", choices=list(MODELS.keys()))
+    parser.add_argument("--data-dir", type=str, default="data")
+    parser.add_argument("--weights-dir", type=str, default="weights")
+    parser.add_argument("--mmap", action="store_true")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--resume", type=str, default=None)
+    
+    args = parser.parse_args()
+    
+    if sys.platform == "darwin":
+        args.workers = 0
+    
+    train(args)
+
 
 if __name__ == "__main__":
-    train_model()
-
+    main()
