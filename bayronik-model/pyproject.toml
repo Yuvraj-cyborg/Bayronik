@@ -1,17 +1,51 @@
 [project]
 name = "bayronik-model"
-version = "0.1.0"
-description = "Baryonic feedback emulator for weak lensing"
+version = "0.2.0"
+description = "SOTA Baryonic feedback emulator using Fourier Neural Operators for weak lensing cosmology"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Yuvraj Biswal", email = "yuvrajbiswalofficial@gmail.com" }]
+keywords = ["cosmology", "weak-lensing", "neural-operator", "fno", "baryonic-physics", "deep-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
 dependencies = [
-    "torch>=2.0.0",
+    "torch>=2.1.0",
     "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "einops>=0.7.0",
     "tqdm>=4.65.0",
 ]
 
 [project.optional-dependencies]
-train = ["torchvision>=0.15.0", "psutil>=5.9.0"]
-wandb = ["wandb>=0.15.0"]
+train = [
+    "wandb>=0.16.0",
+    "tensorboard>=2.15.0",
+    "matplotlib>=3.8.0",
+    "h5py>=3.10.0",
+    "pyyaml>=6.0",
+]
+export = [
+    "onnx>=1.15.0",
+    "onnxruntime>=1.16.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+all = ["bayronik-model[train,export,dev]"]
 
 [build-system]
 requires = ["hatchling"]
@@ -19,3 +53,21 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bayronik_model"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=bayronik_model"
