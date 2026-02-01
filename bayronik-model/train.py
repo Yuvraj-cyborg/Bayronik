@@ -284,7 +284,7 @@ def save_checkpoint(
 def train(args):
     """Main training function."""
     device = get_device()
-    print(f"🚀 Device: {device}")
+    print(f"Device: {device}")
     
     # Paths
     weights_dir = Path(args.weights_dir)
@@ -311,12 +311,12 @@ def train(args):
         return_params=conditional,
     )
     
-    print(f"📊 Dataset: {args.dataset} ({len(train_loader.dataset)} train, {len(val_loader.dataset)} val)")
+    print(f"Dataset: {args.dataset} ({len(train_loader.dataset)} train, {len(val_loader.dataset)} val)")
     
     # Model
     model = create_model(args.model, conditional=conditional).to(device)
     num_params = count_parameters(model)
-    print(f"🧠 Model: {args.model} ({num_params:,} params)")
+    print(f"Model: {args.model} ({num_params:,} params)")
     
     # Resume from checkpoint
     start_epoch = 0
@@ -327,7 +327,7 @@ def train(args):
         model.load_state_dict(checkpoint['model_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_val_loss = checkpoint['best_loss']
-        print(f"📥 Resumed from epoch {start_epoch}")
+        print(f"Resumed from epoch {start_epoch}")
     
     # Loss function
     criterion = BaryonicEmulatorLoss(
@@ -364,7 +364,7 @@ def train(args):
     # Mixed precision
     use_amp = device.type == "cuda" and args.amp
     scaler = GradScaler() if use_amp else None
-    print(f"⚡ AMP: {'enabled' if use_amp else 'disabled'}")
+    print(f"AMP: {'enabled' if use_amp else 'disabled'}")
     
     # Training config for saving
     config = {
@@ -431,7 +431,7 @@ def train(args):
         lr = optimizer.param_groups[0]['lr']
         
         # Print progress
-        marker = "✓" if improved else ""
+        marker = "*" if improved else ""
         print(
             f"Epoch {epoch+1:3d}/{args.epochs} │ "
             f"train {train_losses['total']:.5f} │ "
@@ -463,7 +463,7 @@ def train(args):
         
         # Early stopping
         if patience_counter >= args.patience:
-            print(f"\n⚠️ Early stopping at epoch {epoch+1} (no improvement for {args.patience} epochs)")
+            print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {args.patience} epochs)")
             break
     
     # Final summary
@@ -474,7 +474,7 @@ def train(args):
     print(f"{'='*60}")
     
     # Export to TorchScript
-    print("\n📦 Exporting to TorchScript...")
+    print("\nExporting to TorchScript...")
     model.cpu()
     model.load_state_dict(torch.load(best_path))
     model.eval()

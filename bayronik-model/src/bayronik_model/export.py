@@ -65,7 +65,7 @@ def export_torchscript(
     traced.save(str(output_path))
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"✓ TorchScript exported: {output_path} ({size_mb:.2f} MB)")
+    print(f"TorchScript exported: {output_path} ({size_mb:.2f} MB)")
     
     return output_path
 
@@ -140,14 +140,14 @@ def export_onnx(
             
             if check:
                 onnx.save(onnx_model_simp, str(output_path))
-                print("✓ ONNX model simplified")
+                print("ONNX model simplified")
         except ImportError:
-            print("⚠ onnx-simplifier not installed, skipping simplification")
+            print("Warning: onnx-simplifier not installed, skipping simplification")
         except Exception as e:
-            print(f"⚠ Simplification failed: {e}")
+            print(f"Warning: Simplification failed: {e}")
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"✓ ONNX exported: {output_path} ({size_mb:.2f} MB)")
+    print(f"ONNX exported: {output_path} ({size_mb:.2f} MB)")
     
     return output_path
 
@@ -190,7 +190,7 @@ def quantize_dynamic(
     traced.save(str(output_path))
     
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"✓ Quantized model exported: {output_path} ({size_mb:.2f} MB)")
+    print(f"Quantized model exported: {output_path} ({size_mb:.2f} MB)")
     
     return output_path
 
@@ -240,10 +240,10 @@ def export_onnx_fp16(
         temp_path.unlink()
         
         size_mb = output_path.stat().st_size / (1024 * 1024)
-        print(f"✓ ONNX FP16 exported: {output_path} ({size_mb:.2f} MB)")
+        print(f"ONNX FP16 exported: {output_path} ({size_mb:.2f} MB)")
         
     except ImportError:
-        print("⚠ ONNX not installed, falling back to FP32")
+        print("Warning: ONNX not installed, falling back to FP32")
         temp_path.rename(output_path)
     
     return output_path
@@ -269,7 +269,7 @@ def verify_onnx(
         # Check model validity
         onnx_model = onnx.load(str(onnx_path))
         onnx.checker.check_model(onnx_model)
-        print("✓ ONNX model structure valid")
+        print("ONNX model structure valid")
         
         # Run inference test
         session = ort.InferenceSession(str(onnx_path))
@@ -280,14 +280,14 @@ def verify_onnx(
         
         outputs = session.run(None, inputs)
         
-        print(f"✓ ONNX inference test passed, output shape: {outputs[0].shape}")
+        print(f"ONNX inference test passed, output shape: {outputs[0].shape}")
         return True
         
     except ImportError as e:
-        print(f"⚠ Verification skipped (missing dependency): {e}")
+        print(f"Warning: Verification skipped (missing dependency): {e}")
         return True
     except Exception as e:
-        print(f"✗ ONNX verification failed: {e}")
+        print(f"ONNX verification failed: {e}")
         return False
 
 

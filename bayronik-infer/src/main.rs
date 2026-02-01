@@ -50,14 +50,14 @@ impl App {
 
         let all_data: Vec<f32> = npy_file.into_vec()?;
         let total_sims = all_data.len() / (256 * 256);
-        println!("   ✓ Loaded {} simulations", total_sims);
+        println!("   Loaded {} simulations", total_sims);
 
         let model_path = "../bayronik-model/weights/traced_unet_LH.pt";
         println!("   Loading model: {}", model_path);
         let device = Device::cuda_if_available();
         let model = tch::CModule::load_on_device(model_path, device)
             .with_context(|| format!("Failed to load TorchScript model from '{}'", model_path))?;
-        println!("   ✓ Model loaded on {:?}", device);
+        println!("   Model loaded on {:?}", device);
 
         let first_sim_data = &all_data[..256 * 256];
         let input_map_raw = Tensor::from_slice(first_sim_data)
@@ -273,7 +273,7 @@ fn ui(frame: &mut Frame, app: &App) {
             source_label
         )
     } else {
-        format!("{} | ⚡ {}", source_label, app.status_message)
+        format!("{} | {}", source_label, app.status_message)
     };
 
     let controls = Paragraph::new(controls_text)

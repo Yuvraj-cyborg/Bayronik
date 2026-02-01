@@ -11,22 +11,22 @@ all: setup
 #------------------------------------------------------------------------------
 
 setup: setup-model setup-infer
-	@echo "✓ Setup complete"
+	@echo "Setup complete"
 
 setup-model:
 	@echo "Setting up bayronik-model..."
 	cd bayronik-model && uv venv && uv add torch numpy scipy einops tqdm
-	@echo "✓ Model environment ready"
+	@echo "Model environment ready"
 
 setup-infer:
 	@echo "Building bayronik-infer..."
 	cd bayronik-infer && cargo build --release
-	@echo "✓ Inference binary ready"
+	@echo "Inference binary ready"
 
 setup-core:
 	@echo "Building bayronik-core..."
 	cd bayronik-core && cargo build --release
-	@echo "✓ Core simulation ready"
+	@echo "Core simulation ready"
 
 #------------------------------------------------------------------------------
 # Training
@@ -85,7 +85,7 @@ run: infer
 #------------------------------------------------------------------------------
 
 build: build-core build-infer
-	@echo "✓ All builds complete"
+	@echo "All builds complete"
 
 build-core:
 	cd bayronik-core && cargo build --release
@@ -136,13 +136,13 @@ generate-map:
 #------------------------------------------------------------------------------
 
 test: test-core test-model
-	@echo "✓ All tests passed"
+	@echo "All tests passed"
 
 test-core:
 	cd bayronik-core && cargo test
 
 test-model:
-	cd bayronik-model && source .venv/bin/activate && uv run python -c "from bayronik_model import UFNO2d; print('✓ Model imports work')"
+	cd bayronik-model && source .venv/bin/activate && uv run python -c "from bayronik_model import UFNO2d; print('Model imports work')"
 
 #------------------------------------------------------------------------------
 # Clean
@@ -155,7 +155,7 @@ clean:
 	rm -rf bayronik-model/__pycache__
 	rm -rf bayronik-model/src/bayronik_model/__pycache__
 	find . -name "._*" -delete
-	@echo "✓ Clean complete"
+	@echo "Clean complete"
 
 clean-weights:
 	rm -rf bayronik-model/weights/
