@@ -11,7 +11,7 @@ pub enum Colormap {
 impl Colormap {
     pub fn sample(&self, t: f32) -> Color32 {
         let t = t.clamp(0.0, 1.0);
-        
+
         match self {
             Colormap::Viridis => viridis(t),
             Colormap::Inferno => inferno(t),
@@ -21,6 +21,7 @@ impl Colormap {
     }
 }
 
+#[allow(clippy::approx_constant)]
 fn viridis(t: f32) -> Color32 {
     let colors = [
         (0.267, 0.004, 0.329),
@@ -85,18 +86,23 @@ fn interpolate_colors(colors: &[(f32, f32, f32)], t: f32) -> Color32 {
     let idx = (t * n as f32).floor() as usize;
     let idx = idx.min(n - 1);
     let frac = t * n as f32 - idx as f32;
-    
+
     let (r1, g1, b1) = colors[idx];
     let (r2, g2, b2) = colors[idx + 1];
-    
+
     let r = (r1 + (r2 - r1) * frac) * 255.0;
     let g = (g1 + (g2 - g1) * frac) * 255.0;
     let b = (b1 + (b2 - b1) * frac) * 255.0;
-    
+
     Color32::from_rgb(r as u8, g as u8, b as u8)
 }
 
-pub fn array_to_colorimage(data: &[f32], width: usize, height: usize, colormap: &Colormap) -> ColorImage {
+pub fn array_to_colorimage(
+    data: &[f32],
+    width: usize,
+    height: usize,
+    colormap: &Colormap,
+) -> ColorImage {
     let min_val = data.iter().cloned().fold(f32::INFINITY, f32::min);
     let max_val = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let range = (max_val - min_val).max(1e-8);
@@ -116,6 +122,7 @@ pub fn array_to_colorimage(data: &[f32], width: usize, height: usize, colormap: 
     }
 }
 
+#[allow(dead_code)]
 pub fn compute_statistics(data: &[f32]) -> (f32, f32, f32, f32) {
     let n = data.len() as f32;
     let mean = data.iter().sum::<f32>() / n;
@@ -123,6 +130,6 @@ pub fn compute_statistics(data: &[f32]) -> (f32, f32, f32, f32) {
     let std = variance.sqrt();
     let min = data.iter().cloned().fold(f32::INFINITY, f32::min);
     let max = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    
+
     (mean, std, min, max)
 }

@@ -13,7 +13,7 @@ pub fn start() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
     let web_options = eframe::WebOptions::default();
-    
+
     wasm_bindgen_futures::spawn_local(async {
         let start_result = eframe::WebRunner::new()
             .start(

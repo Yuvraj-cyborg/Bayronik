@@ -1,14 +1,20 @@
 use ndarray::{Array, Array4, IxDyn};
 use tract_onnx::prelude::*;
 
+type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+
 pub struct Emulator {
-    model: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    model: RunnableModel,
     conditional: bool,
     resolution: usize,
 }
 
 impl Emulator {
-    pub fn from_bytes(model_bytes: &[u8], conditional: bool) -> Result<Self, Box<dyn std::error::Error>> {
+    #[allow(dead_code)]
+    pub fn from_bytes(
+        model_bytes: &[u8],
+        conditional: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let model = tract_onnx::onnx()
             .model_for_read(&mut std::io::Cursor::new(model_bytes))?
             .into_optimized()?
@@ -21,24 +27,24 @@ impl Emulator {
         })
     }
 
-    pub fn run(&self, input: &[f32], conditions: Option<&[f32]>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn run(
+        &self,
+        input: &[f32],
+        conditions: Option<&[f32]>,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let n = self.resolution;
-        
+
         let input_log: Vec<f32> = input.iter().map(|&x| (x + 1.0).ln()).collect();
-        
-        let input_tensor: Tensor = Array4::from_shape_vec(
-            (1, 1, n, n),
-            input_log,
-        )?.into();
+
+        let input_tensor: Tensor = Array4::from_shape_vec((1, 1, n, n), input_log)?.into();
 
         let output = if self.conditional {
             if let Some(conds) = conditions {
-                let cond_tensor: Tensor = Array::from_shape_vec(
-                    IxDyn(&[1, conds.len()]),
-                    conds.to_vec(),
-                )?.into();
-                
-                self.model.run(tvec!(input_tensor.into(), cond_tensor.into()))?
+                let cond_tensor: Tensor =
+                    Array::from_shape_vec(IxDyn(&[1, conds.len()]), conds.to_vec())?.into();
+
+                self.model
+                    .run(tvec!(input_tensor.into(), cond_tensor.into()))?
             } else {
                 return Err("Conditional model requires conditions".into());
             }
@@ -60,6 +66,9 @@ mod tests {
     #[test]
     fn test_emulator_creation() {
         let dummy_input = vec![1.0f32; 256 * 256];
-        let _result = dummy_input.iter().map(|&x| (x + 1.0).ln()).collect::<Vec<_>>();
+        let _result = dummy_input
+            .iter()
+            .map(|&x| (x + 1.0).ln())
+            .collect::<Vec<_>>();
     }
 }
