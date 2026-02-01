@@ -11,8 +11,6 @@ pub struct Grid {
     pub density_contrast: Vec<f32>,
     /// A flattened 3D array storing the gravitational potential.
     pub potential: Vec<f32>,
-    /// A flattened 3D array storing the force vector [fx, fy, fz] at each grid point.
-    pub force: Vec<[f32; 3]>,
 }
 
 impl Grid {
@@ -24,7 +22,6 @@ impl Grid {
             box_size,
             density_contrast: vec![0.0; num_cells],
             potential: vec![0.0; num_cells],
-            force: vec![[0.0, 0.0, 0.0]; num_cells],
         }
     }
 
