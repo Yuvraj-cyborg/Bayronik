@@ -122,7 +122,6 @@ pub fn array_to_colorimage(
     }
 }
 
-#[allow(dead_code)]
 pub fn compute_statistics(data: &[f32]) -> (f32, f32, f32, f32) {
     let n = data.len() as f32;
     let mean = data.iter().sum::<f32>() / n;

@@ -32,6 +32,7 @@ struct App {
     total_sims: usize,
     model: tch::CModule,
     device: Device,
+    conditions: Tensor,
     data_source: DataSource,
     status_message: String,
 }
@@ -52,7 +53,7 @@ impl App {
         let total_sims = all_data.len() / (256 * 256);
         println!("   Loaded {} simulations", total_sims);
 
-        let model_path = "../bayronik-model/weights/traced_unet_LH.pt";
+        let model_path = "../bayronik-model/weights/bayronik_ufno_cond.pt";
         println!("   Loading model: {}", model_path);
         let device = Device::cuda_if_available();
         let model = tch::CModule::load_on_device(model_path, device)
@@ -64,8 +65,13 @@ impl App {
             .reshape(&[1, 1, 256, 256])
             .to_kind(Kind::Float);
 
+        // Default cosmological parameters: [Omega_m, sigma_8, A_SN1, A_AGN1, A_SN2, A_AGN2]
+        let conditions = Tensor::from_slice(&[0.3f32, 0.8, 1.0, 1.0, 1.0, 1.0])
+            .reshape(&[1, 6])
+            .to_kind(Kind::Float);
+
         let input_map = input_map_raw.log1p();
-        let output_map = model.forward_ts(&[input_map.to(device)])?.to(Device::Cpu);
+        let output_map = model.forward_ts(&[input_map.to(device), conditions.to(device)])?.to(Device::Cpu);
 
         println!("Ready! Use ← → arrows to navigate simulations");
 
@@ -77,6 +83,7 @@ impl App {
             total_sims,
             model,
             device,
+            conditions,
             data_source: DataSource::CamelsCV,
             status_message: String::new(),
         })
@@ -133,7 +140,7 @@ impl App {
 
         self.output_map = self
             .model
-            .forward_ts(&[self.input_map.to(self.device)])?
+            .forward_ts(&[self.input_map.to(self.device), self.conditions.to(self.device)])?
             .to(Device::Cpu);
 
         self.data_source = DataSource::NBodyGenerated;
@@ -161,7 +168,7 @@ impl App {
         self.input_map = input_map_raw.log1p();
         self.output_map = self
             .model
-            .forward_ts(&[self.input_map.to(self.device)])?
+            .forward_ts(&[self.input_map.to(self.device), self.conditions.to(self.device)])?
             .to(Device::Cpu);
 
         self.current_sim_idx = idx;

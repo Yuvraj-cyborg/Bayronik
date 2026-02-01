@@ -76,9 +76,22 @@ infer: build-infer
 		source ../bayronik-model/.venv/bin/activate && \
 		export DYLD_LIBRARY_PATH=$$(python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))") && \
 		export LIBTORCH_USE_PYTORCH=1 && \
+		export LIBTORCH_BYPASS_VERSION_CHECK=1 && \
 		cargo run --release
 
 run: infer
+
+server:
+	@echo "Starting inference server on http://localhost:8000"
+	cd bayronik-model && uv run --extra server uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+
+server-prod:
+	@echo "Starting production server..."
+	cd bayronik-model && uv run --extra server uvicorn server:app --host 0.0.0.0 --port 8000 --workers 4
+
+webapp:
+	@echo "Starting Streamlit web app on http://localhost:8501"
+	cd bayronik-model && uv run --extra webapp streamlit run webapp.py
 
 #------------------------------------------------------------------------------
 # Build
@@ -189,6 +202,8 @@ help:
 	@echo ""
 	@echo "Run:"
 	@echo "  run / infer    - Run inference TUI"
+	@echo "  server         - Start inference API server (localhost:8000)"
+	@echo "  webapp         - Start Streamlit web app (localhost:8501)"
 	@echo "  generate-map   - Generate N-body map"
 	@echo ""
 	@echo "Export:"

@@ -1,5 +1,4 @@
 mod app;
-mod inference;
 mod visualization;
 
 pub use app::BayronikApp;
