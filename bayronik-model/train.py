@@ -337,7 +337,7 @@ def train(args):
         gradient_weight=args.gradient_weight,
         multiscale_weight=args.multiscale_weight,
         resolution=256,
-    )
+    ).to(device)
     
     # Optimizer
     optimizer = AdamW(

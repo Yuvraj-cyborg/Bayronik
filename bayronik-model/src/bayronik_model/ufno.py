@@ -219,8 +219,9 @@ class UFNO2d(nn.Module):
             m = min(m * 2, modes)
         
         # Output projection
+        # After decoders: h has base_channels, skips[0] has base_channels*2
         self.project = nn.Sequential(
-            nn.Conv2d(base_channels * 2, base_channels, 3, padding=1),  # *2 for final skip
+            nn.Conv2d(base_channels * 3, base_channels, 3, padding=1),  # base + 2*base from skip[0]
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Conv2d(base_channels, out_channels, 1),
@@ -266,6 +267,8 @@ class UFNO2dConditional(nn.Module):
     - Redshift (z)
     - Feedback parameters (A_AGN, A_SN)
     - Cosmological parameters (Omega_m, sigma_8)
+    
+    Uses per-layer FiLM projections to handle varying channel sizes.
     """
     
     def __init__(
@@ -282,15 +285,6 @@ class UFNO2dConditional(nn.Module):
         self.depth = depth
         self.base_channels = base_channels
         
-        # Condition encoder
-        self.condition_encoder = nn.Sequential(
-            nn.Linear(num_conditions, base_channels * 2),
-            nn.GELU(),
-            nn.Linear(base_channels * 2, base_channels * 4),
-            nn.GELU(),
-            nn.Linear(base_channels * 4, base_channels * 4 * depth),  # Per-layer gamma, beta
-        )
-        
         # Input projection
         self.lift = nn.Sequential(
             nn.Conv2d(in_channels, base_channels, 3, padding=1),
@@ -298,23 +292,40 @@ class UFNO2dConditional(nn.Module):
             nn.Conv2d(base_channels, base_channels, 3, padding=1),
         )
         
-        # Encoder
+        # Build encoder and track channel sizes per layer
         self.encoders = nn.ModuleList()
         self.encoder_norms = nn.ModuleList()
         ch = base_channels
         m = modes
-        channel_sizes = [ch]
+        encoder_channels = []  # Track output channels per encoder
         
         for i in range(depth):
             out_ch = ch * 2 if i < depth - 1 else ch
+            encoder_channels.append(out_ch)
             self.encoders.append(
                 UFNOEncoderBlock(ch, out_ch, m, downsample=(i < depth - 1))
             )
             self.encoder_norms.append(nn.GroupNorm(8, out_ch))
             if i < depth - 1:
                 ch = out_ch
-                channel_sizes.append(ch)
                 m = max(m // 2, 4)
+        
+        self.encoder_channels = encoder_channels  # [64, 128, 256, 256] for depth=4, base=32
+        
+        # Shared condition embedding
+        hidden_dim = base_channels * 4
+        self.condition_embed = nn.Sequential(
+            nn.Linear(num_conditions, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        
+        # Per-layer FiLM projections (gamma, beta for each layer's channel count)
+        self.film_projections = nn.ModuleList([
+            nn.Linear(hidden_dim, out_ch * 2)  # gamma and beta
+            for out_ch in encoder_channels
+        ])
         
         # Bottleneck
         self.bottleneck = nn.Sequential(
@@ -339,8 +350,9 @@ class UFNO2dConditional(nn.Module):
             m = min(m * 2, modes)
         
         # Output projection
+        # After decoders: h has base_channels, skips[0] has base_channels*2
         self.project = nn.Sequential(
-            nn.Conv2d(base_channels * 2, base_channels, 3, padding=1),
+            nn.Conv2d(base_channels * 3, base_channels, 3, padding=1),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Conv2d(base_channels, out_channels, 1),
@@ -355,45 +367,38 @@ class UFNO2dConditional(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
         
-        # Initialize FiLM to identity
-        nn.init.zeros_(self.condition_encoder[-1].weight)
-        nn.init.zeros_(self.condition_encoder[-1].bias)
+        # Initialize FiLM projections to identity (gamma=0 -> 1+gamma=1, beta=0)
+        for proj in self.film_projections:
+            nn.init.zeros_(proj.weight)
+            nn.init.zeros_(proj.bias)
 
     def forward(
         self,
         x: torch.Tensor,
         conditions: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Encode conditions
+        # Encode conditions to shared embedding
         if conditions is not None:
-            film_params = self.condition_encoder(conditions)
-            film_params = rearrange(
-                film_params,
-                'b (d c) -> b d c',
-                d=self.depth,
-                c=self.base_channels * 4
-            )
-            # Split into gamma and beta for each channel size
-            gammas = film_params[..., :self.base_channels * 2]
-            betas = film_params[..., self.base_channels * 2:]
+            cond_embed = self.condition_embed(conditions)  # (B, hidden_dim)
         else:
-            gammas = None
-            betas = None
+            cond_embed = None
         
         # Lift
         h = self.lift(x)
         
-        # Encoder with conditioning
+        # Encoder with per-layer FiLM conditioning
         skips = []
-        for i, (encoder, norm) in enumerate(zip(self.encoders, self.encoder_norms)):
+        for i, (encoder, norm, film_proj) in enumerate(
+            zip(self.encoders, self.encoder_norms, self.film_projections)
+        ):
             h, skip = encoder(h)
             
             # Apply FiLM conditioning
-            if gammas is not None:
-                # Adapt gamma/beta to current channel size
-                curr_channels = skip.shape[1]
-                gamma = gammas[:, i, :curr_channels, None, None]
-                beta = betas[:, i, :curr_channels, None, None]
+            if cond_embed is not None:
+                film_params = film_proj(cond_embed)  # (B, out_ch * 2)
+                ch = self.encoder_channels[i]
+                gamma = film_params[:, :ch, None, None]      # (B, ch, 1, 1)
+                beta = film_params[:, ch:, None, None]       # (B, ch, 1, 1)
                 skip = (1 + gamma) * norm(skip) + beta
             
             skips.append(skip)
@@ -413,10 +418,11 @@ class UFNO2dConditional(nn.Module):
 
 class AttentionUFNO2d(nn.Module):
     """
-    U-FNO with self-attention in bottleneck for enhanced global reasoning.
+    U-FNO with self-attention for enhanced global reasoning.
     
-    Adds multi-head self-attention at the bottleneck to capture
-    long-range dependencies that even FNO might miss.
+    Applies multi-head self-attention at a reduced resolution (pooled)
+    to capture long-range dependencies efficiently, then upsamples
+    and fuses with the main features.
     """
     
     def __init__(
@@ -427,11 +433,13 @@ class AttentionUFNO2d(nn.Module):
         modes: int = 32,
         depth: int = 4,
         num_heads: int = 8,
+        attn_resolution: int = 16,  # Reduced resolution for attention
         dropout: float = 0.0,
     ):
         super().__init__()
+        self.attn_resolution = attn_resolution
         
-        # Most architecture same as UFNO2d
+        # Main U-FNO backbone
         self.ufno = UFNO2d(
             in_channels=in_channels,
             out_channels=base_channels,  # Output intermediate features
@@ -441,11 +449,10 @@ class AttentionUFNO2d(nn.Module):
             dropout=dropout,
         )
         
-        # Replace output projection with attention + projection
-        bottleneck_size = 256 // (2 ** (depth - 1))  # Approximate
-        bottleneck_channels = base_channels * (2 ** (depth - 1))
+        # Self-attention branch at reduced resolution
+        # Pool -> Attention -> Upsample
+        self.attn_pool = nn.AdaptiveAvgPool2d(attn_resolution)
         
-        # Self-attention on flattened spatial features
         self.attention = nn.MultiheadAttention(
             embed_dim=base_channels,
             num_heads=num_heads,
@@ -453,6 +460,13 @@ class AttentionUFNO2d(nn.Module):
             batch_first=True,
         )
         self.attn_norm = nn.LayerNorm(base_channels)
+        
+        # Fusion: combine main features with attention-enhanced features
+        self.fusion = nn.Sequential(
+            nn.Conv2d(base_channels * 2, base_channels, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(base_channels, base_channels, 3, padding=1),
+        )
         
         # Final projection
         self.final_project = nn.Conv2d(base_channels, out_channels, 1)
@@ -463,13 +477,20 @@ class AttentionUFNO2d(nn.Module):
         # Get U-FNO features
         h = self.ufno(x)  # (B, base_channels, H, W)
         
-        # Apply self-attention
-        h_flat = rearrange(h, 'b c h w -> b (h w) c')
+        # Attention branch at reduced resolution
+        h_pool = self.attn_pool(h)  # (B, base_channels, attn_res, attn_res)
+        h_flat = rearrange(h_pool, 'b c h w -> b (h w) c')
         h_attn, _ = self.attention(h_flat, h_flat, h_flat)
         h_attn = self.attn_norm(h_attn + h_flat)  # Residual
-        h = rearrange(h_attn, 'b (h w) c -> b c h w', h=H, w=W)
+        h_attn = rearrange(h_attn, 'b (h w) c -> b c h w', h=self.attn_resolution, w=self.attn_resolution)
         
-        return self.final_project(h)
+        # Upsample attention features back to original resolution
+        h_attn_up = F.interpolate(h_attn, size=(H, W), mode='bilinear', align_corners=False)
+        
+        # Fuse main features with attention-enhanced features
+        h_fused = self.fusion(torch.cat([h, h_attn_up], dim=1))
+        
+        return self.final_project(h_fused)
 
 
 def count_parameters(model: nn.Module) -> int:

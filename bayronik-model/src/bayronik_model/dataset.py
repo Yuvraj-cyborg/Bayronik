@@ -107,12 +107,17 @@ class CAMELSDataset(Dataset):
             params = np.tile([0.3, 0.8, 1.0, 1.0, 1.0, 1.0], (self.num_samples, 1))
             return params.astype(np.float32)
         
-        # Try to load LH parameter file
-        param_file = self.data_dir / f"params_{self.suite}_{self.dataset_type}.txt"
+        # Try to load LH parameter file (check both naming conventions)
+        param_file = self.data_dir / f"params_{self.dataset_type}_{self.suite}.txt"
+        if not param_file.exists():
+            param_file = self.data_dir / f"params_{self.suite}_{self.dataset_type}.txt"
+        
         if param_file.exists():
             params = np.loadtxt(param_file)
             if params.shape[0] == self.num_samples:
                 return params.astype(np.float32)
+            elif params.shape[0] > self.num_samples:
+                return params[:self.num_samples].astype(np.float32)
         
         # Generate synthetic parameters (for demo purposes)
         # In production, always use actual CAMELS parameters

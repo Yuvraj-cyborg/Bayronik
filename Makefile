@@ -93,10 +93,17 @@ build-core:
 build-infer:
 	cd bayronik-infer && cargo build --release
 
+build-web:
+	cd bayronik-web && cargo build --release
+
 build-wasm:
-	@echo "Building WASM frontend..."
-	cd bayronik-web && cargo build --target wasm32-unknown-unknown --release
-	@echo "✓ WASM build complete"
+	cd bayronik-web && wasm-pack build --target web --out-dir pkg --release
+
+run-web:
+	cd bayronik-web && cargo run --release
+
+serve-web: build-wasm
+	cd bayronik-web && python3 -m http.server 8080
 
 #------------------------------------------------------------------------------
 # Export
@@ -190,7 +197,10 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  build          - Build all Rust binaries"
+	@echo "  build-web      - Build native web app"
 	@echo "  build-wasm     - Build WASM frontend"
+	@echo "  run-web        - Run native web app"
+	@echo "  serve-web      - Build WASM and serve locally"
 	@echo ""
 	@echo "Clean:"
 	@echo "  clean          - Remove build artifacts"
