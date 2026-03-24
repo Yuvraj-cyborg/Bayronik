@@ -1,24 +1,26 @@
 use bayronik_core::{output, run_simulation};
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let grid_res = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
+    let box_size = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(100.0);
+    let steps = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+    let proj_res = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(256);
+    let output_path = args.get(5).cloned().unwrap_or_else(|| "nbody_map_256.npy".to_string());
+
     println!("Generating N-body simulation map...");
+    println!("grid_res={}, box_size={}, steps={}, proj_res={}", grid_res, box_size, steps, proj_res);
 
-    let map = run_simulation(
-        32_768, // particles
-        64,     // grid resolution
-        100.0,  // box size (Mpc/h)
-        0.01,   // time step
-        10,     // steps
-        256,    // output resolution
-    );
+    let map = run_simulation(32_768, grid_res, box_size, 0.01, steps, proj_res);
 
-    let output_path = "nbody_map_256.npy";
-    output::save_map_npy(&map, 256, output_path)?;
+    output::save_map_npy(&map, proj_res, &output_path)?;
     println!("Saved to {}", output_path);
 
     let mean = map.iter().sum::<f32>() / map.len() as f32;
     let std = (map.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / map.len() as f32).sqrt();
-    println!("Stats: mean={:.3e}, std={:.3e}", mean, std);
+    let max = map.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let min = map.iter().cloned().fold(f32::INFINITY, f32::min);
+    println!("Stats: mean={:.3e}, std={:.3e}, min={:.3e}, max={:.3e}", mean, std, min, max);
 
     Ok(())
 }
