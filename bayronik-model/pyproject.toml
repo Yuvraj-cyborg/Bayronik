@@ -48,13 +48,16 @@ webapp = [
     "streamlit>=1.30.0",
     "plotly>=5.18.0",
 ]
+demo = [
+    "bayronik-model[server,webapp]",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.7.0",
 ]
-all = ["bayronik-model[train,export,dev]"]
+all = ["bayronik-model[train,export,server,webapp,dev]"]
 
 [build-system]
 requires = ["hatchling"]

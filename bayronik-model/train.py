@@ -336,6 +336,7 @@ def train(args):
         stats_weight=args.stats_weight,
         gradient_weight=args.gradient_weight,
         multiscale_weight=args.multiscale_weight,
+        mass_weight=args.mass_weight,
         resolution=256,
     ).to(device)
     
@@ -522,10 +523,11 @@ def main():
     
     # Loss weights
     parser.add_argument("--pixel-weight", type=float, default=1.0, help="Pixel loss weight")
-    parser.add_argument("--spectral-weight", type=float, default=0.1, help="Spectral loss weight")
+    parser.add_argument("--spectral-weight", type=float, default=0.5, help="Spectral loss weight")
     parser.add_argument("--stats-weight", type=float, default=0.1, help="Statistics loss weight")
     parser.add_argument("--gradient-weight", type=float, default=0.05, help="Gradient loss weight")
     parser.add_argument("--multiscale-weight", type=float, default=0.1, help="Multiscale loss weight")
+    parser.add_argument("--mass-weight", type=float, default=0.01, help="Mass conservation loss weight")
     
     # System
     parser.add_argument("--workers", type=int, default=4, help="Data loading workers")

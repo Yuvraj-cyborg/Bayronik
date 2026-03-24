@@ -7,7 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 
-BASE_URL = "https://users.flatironinstitute.org/~fvillaescusa/priv/DEPnzxoWlaTQ6CjrXqsm0vYi8L7Yy/CMD/2D_maps/data"
+BASE_URL = "https://users.flatironinstitute.org/~fvillaescusa/priv/DEPnzxoWlaTQ6CjrXqsm0vYi8L7Jy/CMD/2D_maps/data/IllustrisTNG"
 
 FILES = {
     "CV": [

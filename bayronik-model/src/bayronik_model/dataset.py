@@ -100,33 +100,51 @@ class CAMELSDataset(Dataset):
         self.stats = self._compute_stats() if cache_stats else None
 
     def _load_params(self) -> Optional[np.ndarray]:
-        """Load physics parameters for LH dataset."""
+        """Load physics parameters for LH dataset.
+        
+        CAMELS maps have multiple projections per simulation (typically 15).
+        The params file has one row per simulation, so we repeat each row
+        to match the number of maps.
+        """
         if self.dataset_type == "CV":
-            # CV has fixed cosmology
-            # Planck 2018 values + default feedback
             params = np.tile([0.3, 0.8, 1.0, 1.0, 1.0, 1.0], (self.num_samples, 1))
             return params.astype(np.float32)
         
-        # Try to load LH parameter file (check both naming conventions)
+        # Try both naming conventions
         param_file = self.data_dir / f"params_{self.dataset_type}_{self.suite}.txt"
         if not param_file.exists():
             param_file = self.data_dir / f"params_{self.suite}_{self.dataset_type}.txt"
         
         if param_file.exists():
             params = np.loadtxt(param_file)
-            if params.shape[0] == self.num_samples:
+            n_sims = params.shape[0]
+            
+            if n_sims == self.num_samples:
                 return params.astype(np.float32)
-            elif params.shape[0] > self.num_samples:
+            
+            if n_sims > self.num_samples:
                 return params[:self.num_samples].astype(np.float32)
+            
+            # Multiple projections per simulation (e.g. 15000 maps / 1000 sims = 15)
+            if self.num_samples % n_sims == 0:
+                maps_per_sim = self.num_samples // n_sims
+                print(f"Expanding {n_sims} params to {self.num_samples} maps "
+                      f"({maps_per_sim} projections per sim)")
+                params = np.repeat(params, maps_per_sim, axis=0)
+                return params.astype(np.float32)
+            
+            # Partial match: take as many complete repetitions as possible
+            print(f"Warning: params ({n_sims}) don't divide evenly into "
+                  f"maps ({self.num_samples}), using nearest repeat")
+            maps_per_sim = max(1, self.num_samples // n_sims)
+            params = np.repeat(params, maps_per_sim, axis=0)
+            return params[:self.num_samples].astype(np.float32)
         
-        # Generate synthetic parameters (for demo purposes)
-        # In production, always use actual CAMELS parameters
-        np.random.seed(42)
-        params = np.zeros((self.num_samples, 6), dtype=np.float32)
-        for i, (key, (low, high)) in enumerate(self.LH_PARAMS.items()):
-            params[:, i] = np.random.uniform(low, high, self.num_samples)
-        
-        return params
+        raise FileNotFoundError(
+            f"No parameter file found for {self.dataset_type}_{self.suite}. "
+            f"Looked for: params_{self.dataset_type}_{self.suite}.txt and "
+            f"params_{self.suite}_{self.dataset_type}.txt in {self.data_dir}"
+        )
 
     def _compute_stats(self) -> Dict[str, float]:
         """Compute dataset statistics for normalization."""
