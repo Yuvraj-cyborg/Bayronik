@@ -10,3 +10,4 @@ Cargo.lock
 */data
 */weights
 ._*
+bayronik-core/custom_output.npy
