@@ -2,11 +2,12 @@
 """
 FastAPI inference server for Bayronik baryonic field emulator.
 
-Run: uv run uvicorn server:app --host 0.0.0.0 --port 8000
+Run: make server
 """
 
 import io
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,40 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from bayronik_model.ufno import UFNO2dConditional
 
-app = FastAPI(title="Bayronik Inference API", version="1.0.0")
+MODEL = None
+DEVICE = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load model on startup."""
+    global MODEL, DEVICE
+    
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {DEVICE}")
+    
+    model_path = Path(__file__).parent / "weights" / "best_ufno_cond_LH_IllustrisTNG.pth"
+    
+    if not model_path.exists():
+        print(f"Warning: Model not found at {model_path}")
+    else:
+        MODEL = UFNO2dConditional(
+            in_channels=1,
+            out_channels=1,
+            base_channels=32,
+            modes=32,
+            depth=4,
+            num_conditions=6,
+        )
+        MODEL.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
+        MODEL.to(DEVICE)
+        MODEL.eval()
+        print(f"Model loaded from {model_path}")
+    
+    yield
+
+
+app = FastAPI(title="Bayronik Inference API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,9 +62,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-MODEL = None
-DEVICE = None
 
 
 class InferenceRequest(BaseModel):
@@ -49,33 +80,6 @@ class InferenceResponse(BaseModel):
     output_shape: list[int]
 
 
-@app.on_event("startup")
-async def load_model():
-    global MODEL, DEVICE
-    
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {DEVICE}")
-    
-    model_path = Path(__file__).parent / "weights" / "best_ufno_cond_LH_IllustrisTNG.pth"
-    
-    if not model_path.exists():
-        print(f"Warning: Model not found at {model_path}")
-        return
-    
-    MODEL = UFNO2dConditional(
-        in_channels=1,
-        out_channels=1,
-        base_channels=32,
-        modes=32,
-        depth=4,
-        num_conditions=6,
-    )
-    MODEL.load_state_dict(torch.load(model_path, map_location=DEVICE))
-    MODEL.to(DEVICE)
-    MODEL.eval()
-    print(f"Model loaded from {model_path}")
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok", "model_loaded": MODEL is not None}
@@ -89,9 +93,8 @@ async def infer(request: InferenceRequest):
     input_array = np.array(request.input_map, dtype=np.float32)
     h, w = input_array.shape
     
-    print(f"Inference with params: Om={request.omega_m:.3f}, s8={request.sigma_8:.3f}, "
-          f"ASN1={request.a_sn1:.3f}, AAGN1={request.a_agn1:.3f}, "
-          f"ASN2={request.a_sn2:.3f}, AAGN2={request.a_agn2:.3f}")
+    print(f"Inference: Om={request.omega_m:.3f}, s8={request.sigma_8:.3f}, "
+          f"ASN1={request.a_sn1:.3f}, AAGN1={request.a_agn1:.3f}")
     
     input_log = np.log1p(input_array)
     input_tensor = torch.from_numpy(input_log).unsqueeze(0).unsqueeze(0).to(DEVICE)
@@ -107,8 +110,8 @@ async def infer(request: InferenceRequest):
     output_log = output_tensor.squeeze().cpu().numpy()
     output_array = np.expm1(output_log)
     
-    print(f"Input range: [{input_array.min():.3f}, {input_array.max():.3f}]")
-    print(f"Output range: [{output_array.min():.3f}, {output_array.max():.3f}]")
+    print(f"Input: [{input_array.min():.3f}, {input_array.max():.3f}] -> "
+          f"Output: [{output_array.min():.3f}, {output_array.max():.3f}]")
     
     return InferenceResponse(
         output_map=output_array.tolist(),
