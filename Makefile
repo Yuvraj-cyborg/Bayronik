@@ -99,7 +99,10 @@ download-lh:
 	else echo "  Already exists, skipping."; fi
 	@echo "Downloading LH parameter file..."
 	@if [ ! -f "$(DATA_DIR)/params_LH_IllustrisTNG.txt" ]; then \
-		wget -c -P $(DATA_DIR) "$(CAMELS_CMD)/params_LH_IllustrisTNG.txt"; \
+		wget -O $(DATA_DIR)/_raw_params.txt "https://raw.githubusercontent.com/franciscovillaescusa/CAMELS/master/docs/params/IllustrisTNG/CosmoAstroSeed_IllustrisTNG_L25n256_LH.txt" && \
+		python3 -c "import numpy as np; d=np.genfromtxt('$(DATA_DIR)/_raw_params.txt',dtype=str,comments='#'); np.savetxt('$(DATA_DIR)/params_LH_IllustrisTNG.txt',d[:,1:7].astype(float),fmt='%.5f')" && \
+		rm -f $(DATA_DIR)/_raw_params.txt && \
+		echo "  Params saved"; \
 	else echo "  Already exists, skipping."; fi
 	@echo "LH data download complete"
 

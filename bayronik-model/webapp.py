@@ -51,7 +51,7 @@ def load_model():
     return model, device
 
 
-@st.cache_data
+@st.cache_resource
 def load_test_data():
     data_dir = Path(__file__).parent / "data"
     available = {}
@@ -60,10 +60,12 @@ def load_test_data():
         dm = data_dir / f"Maps_Mcdm_IllustrisTNG_{dt}_z=0.00.npy"
         mt = data_dir / f"Maps_Mtot_IllustrisTNG_{dt}_z=0.00.npy"
         if dm.exists() and "Mcdm" not in available:
-            available["Mcdm"] = np.load(dm)
+            print(f"[load] Memory-mapping {dm.name} ...")
+            available["Mcdm"] = np.load(dm, mmap_mode="r")
             available["dataset_type"] = dt
         if mt.exists() and "Mtot" not in available:
-            available["Mtot"] = np.load(mt)
+            print(f"[load] Memory-mapping {mt.name} ...")
+            available["Mtot"] = np.load(mt, mmap_mode="r")
 
     for name in ["params_LH_IllustrisTNG.txt", "params_IllustrisTNG_LH.txt"]:
         p = data_dir / name
@@ -71,6 +73,7 @@ def load_test_data():
             available["params"] = np.loadtxt(p)
             break
 
+    print(f"[load] Data ready: {list(available.keys())}")
     return available
 
 
@@ -80,7 +83,8 @@ def load_test_data():
 
 def run_inference(model, device, input_map: np.ndarray, params: dict) -> np.ndarray:
     """Run U-FNO inference on a single 2D density map."""
-    input_log = np.log1p(input_map.astype(np.float32))
+    safe_input = np.clip(input_map.astype(np.float32), 0, None)
+    input_log = np.log1p(safe_input)
     input_tensor = torch.from_numpy(input_log).unsqueeze(0).unsqueeze(0).to(device)
     conditions = torch.tensor([list(params.values())], dtype=torch.float32).to(device)
 
@@ -126,10 +130,18 @@ def run_nbody(grid_res: int = 64, box_size: float = 100.0,
 # Cosmology analysis functions
 # ---------------------------------------------------------------------------
 
+def _safe_log1p(field: np.ndarray) -> np.ndarray:
+    """log1p that clamps non-positive values to avoid -inf / nan."""
+    f = np.asarray(field, dtype=np.float64)
+    f = np.clip(f, 0, None)
+    return np.log1p(f)
+
+
 def compute_power_spectrum(field: np.ndarray):
     """Isotropic 2D power spectrum P(k)."""
-    n = field.shape[0]
-    fft = np.fft.fft2(field)
+    f = np.nan_to_num(field, nan=0.0, posinf=0.0, neginf=0.0)
+    n = f.shape[0]
+    fft = np.fft.fft2(f)
     pk2d = np.abs(fft) ** 2 / n**4
 
     kx = np.fft.fftfreq(n, d=1.0 / n)
@@ -153,8 +165,14 @@ def compute_power_spectrum(field: np.ndarray):
 
 def compute_baryon_suppression(k_dm, pk_dm, k_tot, pk_tot):
     """S(k) = P_tot(k) / P_dm(k), interpolated to common k grid."""
+    if len(k_dm) == 0 or len(k_tot) == 0:
+        return np.array([1.0]), np.array([1.0])
+
     k_min = max(k_dm[0], k_tot[0])
     k_max = min(k_dm[-1], k_tot[-1])
+    if k_max <= k_min:
+        return np.array([1.0]), np.array([1.0])
+
     k_common = np.linspace(k_min, k_max, min(len(k_dm), len(k_tot)))
 
     pk_dm_interp = np.interp(k_common, k_dm, pk_dm)
@@ -168,8 +186,11 @@ def compute_baryon_suppression(k_dm, pk_dm, k_tot, pk_tot):
 
 def compute_pixel_pdf(field: np.ndarray, n_bins: int = 80):
     """Compute 1-point PDF of the log-density field."""
-    log_field = np.log1p(field.flatten())
-    counts, edges = np.histogram(log_field, bins=n_bins, density=True)
+    log_field = _safe_log1p(field.flatten())
+    finite = log_field[np.isfinite(log_field)]
+    if len(finite) == 0:
+        return np.array([0.0]), np.array([0.0])
+    counts, edges = np.histogram(finite, bins=n_bins, density=True)
     centers = 0.5 * (edges[:-1] + edges[1:])
     return centers, counts
 
@@ -325,12 +346,12 @@ def tab_camels(model, device, test_data, log_scale, cmap,
     n_samples = dm_maps.shape[0] if dm_maps.ndim == 3 else 1
 
     sample_idx = st.number_input("Sample index", 0, n_samples - 1, 0)
-    input_map = dm_maps[sample_idx] if dm_maps.ndim == 3 else dm_maps
+    input_map = np.array(dm_maps[sample_idx]) if dm_maps.ndim == 3 else np.array(dm_maps)
 
     gt_map = None
     if "Mtot" in test_data:
         m = test_data["Mtot"]
-        gt_map = m[sample_idx] if m.ndim == 3 else m
+        gt_map = np.array(m[sample_idx]) if m.ndim == 3 else np.array(m)
 
     if use_sample and "params" in test_data:
         params, sim_idx = get_sample_params(test_data, sample_idx, n_samples)
@@ -343,14 +364,23 @@ def tab_camels(model, device, test_data, log_scale, cmap,
         params = manual_params
 
     if st.button("Run Inference", type="primary", key="data_infer"):
+        if model is None:
+            st.error("Model not loaded")
+            return
         with st.spinner("Running inference..."):
-            output_map = run_inference(model, device, input_map, params)
+            try:
+                output_map = run_inference(model, device, input_map, params)
+            except Exception as e:
+                st.error(f"Inference failed: {e}")
+                import traceback; traceback.print_exc()
+                return
         st.session_state["d_input"] = input_map
         st.session_state["d_output"] = output_map
         st.session_state["d_diff"] = output_map - input_map
         st.session_state["d_gt"] = gt_map
 
     if "d_input" not in st.session_state:
+        st.info("Select a sample above and click **Run Inference** to begin.")
         return
 
     inp = st.session_state["d_input"]
@@ -359,11 +389,11 @@ def tab_camels(model, device, test_data, log_scale, cmap,
 
     c1, c2, c3 = st.columns(3)
     c1.plotly_chart(make_heatmap(inp, "Input: Mcdm", cmap, log_scale),
-                    use_container_width=True)
+                    width="stretch")
     c2.plotly_chart(make_heatmap(out, "Predicted: Mtot", cmap, log_scale),
-                    use_container_width=True)
+                    width="stretch")
     c3.plotly_chart(make_heatmap(diff, "Baryonic Effect", cmap, diverging=True),
-                    use_container_width=True)
+                    width="stretch")
 
     if st.session_state["d_gt"] is None:
         return
@@ -374,11 +404,11 @@ def tab_camels(model, device, test_data, log_scale, cmap,
     st.subheader("Ground Truth Comparison")
     c1, c2, c3 = st.columns(3)
     c1.plotly_chart(make_heatmap(gt, "Ground Truth: Mtot", cmap, log_scale),
-                    use_container_width=True)
+                    width="stretch")
     c2.plotly_chart(make_heatmap(out, "Prediction", cmap, log_scale),
-                    use_container_width=True)
+                    width="stretch")
     c3.plotly_chart(make_heatmap(error, "Error", cmap, diverging=True),
-                    use_container_width=True)
+                    width="stretch")
 
     gt_log = np.log10(gt + 1)
     out_log = np.log10(out + 1)
@@ -396,9 +426,9 @@ def tab_camels(model, device, test_data, log_scale, cmap,
 def render_analysis(inp, out, gt, log_scale):
     """Power spectrum, baryon suppression, and pixel PDF comparison."""
     st.subheader("Power Spectrum P(k)")
-    k_inp, pk_inp = compute_power_spectrum(np.log1p(inp))
-    k_out, pk_out = compute_power_spectrum(np.log1p(out))
-    k_gt, pk_gt = compute_power_spectrum(np.log1p(gt))
+    k_inp, pk_inp = compute_power_spectrum(_safe_log1p(inp))
+    k_out, pk_out = compute_power_spectrum(_safe_log1p(out))
+    k_gt, pk_gt = compute_power_spectrum(_safe_log1p(gt))
 
     fig_ps = make_line_plot(
         [(k_inp, pk_inp, "Input (Mcdm)"),
@@ -406,7 +436,7 @@ def render_analysis(inp, out, gt, log_scale):
          (k_gt, pk_gt, "Ground Truth (Mtot)")],
         "Power Spectrum P(k)", "k", "P(k)",
     )
-    st.plotly_chart(fig_ps, use_container_width=True)
+    st.plotly_chart(fig_ps, width="stretch")
 
     st.subheader("Baryon Suppression Ratio S(k)")
     st.caption("S(k) = P_total(k) / P_DM(k).  S=1 means no baryonic effect.")
@@ -420,7 +450,7 @@ def render_analysis(inp, out, gt, log_scale):
             "Baryon Suppression", "k", "S(k) = P_tot/P_DM",
             logy=False, hline=1.0,
         )
-        st.plotly_chart(fig_supp, use_container_width=True)
+        st.plotly_chart(fig_supp, width="stretch")
 
     with c2:
         x_inp, y_inp = compute_pixel_pdf(inp)
@@ -433,7 +463,7 @@ def render_analysis(inp, out, gt, log_scale):
             "1-Point PDF", "log(1+rho)", "density",
             logx=False, logy=False,
         )
-        st.plotly_chart(fig_pdf, use_container_width=True)
+        st.plotly_chart(fig_pdf, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -478,15 +508,15 @@ def tab_nbody(model, device, log_scale, cmap, manual_params):
 
     c1, c2, c3 = st.columns(3)
     c1.plotly_chart(make_heatmap(inp, "N-Body: DM Density", cmap, log_scale),
-                    use_container_width=True)
+                    width="stretch")
     c2.plotly_chart(make_heatmap(out, "Emulated: Total Matter", cmap, log_scale),
-                    use_container_width=True)
+                    width="stretch")
     c3.plotly_chart(make_heatmap(diff, "Baryonic Effect", cmap, diverging=True),
-                    use_container_width=True)
+                    width="stretch")
 
     st.subheader("Power Spectrum")
-    k_inp, pk_inp = compute_power_spectrum(np.log1p(inp))
-    k_out, pk_out = compute_power_spectrum(np.log1p(out))
+    k_inp, pk_inp = compute_power_spectrum(_safe_log1p(inp))
+    k_out, pk_out = compute_power_spectrum(_safe_log1p(out))
 
     c1, c2 = st.columns(2)
     with c1:
@@ -494,7 +524,7 @@ def tab_nbody(model, device, log_scale, cmap, manual_params):
             [(k_inp, pk_inp, "N-Body DM"), (k_out, pk_out, "Emulated Mtot")],
             "Power Spectrum", "k", "P(k)",
         )
-        st.plotly_chart(fig_ps, use_container_width=True)
+        st.plotly_chart(fig_ps, width="stretch")
     with c2:
         k_s, s_k = compute_baryon_suppression(k_inp, pk_inp, k_out, pk_out)
         fig_sup = make_line_plot(
@@ -502,7 +532,7 @@ def tab_nbody(model, device, log_scale, cmap, manual_params):
             "Baryon Suppression", "k", "S(k)",
             logy=False, hline=1.0,
         )
-        st.plotly_chart(fig_sup, use_container_width=True)
+        st.plotly_chart(fig_sup, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +550,7 @@ def tab_sweep(model, device, test_data, log_scale, cmap, manual_params):
     dm_maps = test_data["Mcdm"]
     sweep_idx = st.number_input("Sample", 0, dm_maps.shape[0] - 1, 0,
                                 key="sweep_idx")
-    sweep_input = dm_maps[sweep_idx]
+    sweep_input = np.array(dm_maps[sweep_idx])
 
     c1, c2 = st.columns(2)
     sweep_param = c1.selectbox(
@@ -547,16 +577,16 @@ def tab_sweep(model, device, test_data, log_scale, cmap, manual_params):
         with cols[i]:
             st.plotly_chart(
                 make_heatmap(result, f"{val:.2f}", cmap, log_scale),
-                use_container_width=True,
+                width="stretch",
             )
             st.caption(f"mean={result.mean():.2e}")
 
-        k, pk = compute_power_spectrum(np.log1p(result))
+        k, pk = compute_power_spectrum(_safe_log1p(result))
         spectra.append((k, pk, f"{sweep_param}={val:.2f}"))
 
     st.subheader("Power Spectrum vs Parameter")
     fig_ps = make_line_plot(spectra, "Power Spectrum", "k", "P(k)")
-    st.plotly_chart(fig_ps, use_container_width=True)
+    st.plotly_chart(fig_ps, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -616,10 +646,14 @@ def main():
     st.title("Bayronik")
     st.caption("Field-level baryonic emulator: dark matter density -> total matter")
 
-    model, device = load_model()
-    test_data = load_test_data()
+    with st.spinner("Loading model..."):
+        model, device = load_model()
+    with st.spinner("Loading data (memory-mapped)..."):
+        test_data = load_test_data()
     if model is None:
+        st.error("Failed to load model. Check weights/ directory.")
         st.stop()
+    st.sidebar.success(f"Model loaded on {device}")
 
     log_scale, cmap, use_sample, manual_params = render_sidebar(test_data)
 

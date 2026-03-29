@@ -4,12 +4,17 @@
 import argparse
 import urllib.request
 from pathlib import Path
+
+import numpy as np
 from tqdm import tqdm
 
 
 BASE_URL = "https://users.flatironinstitute.org/~fvillaescusa/priv/DEPnzxoWlaTQ6CjrXqsm0vYi8L7Jy/CMD/2D_maps/data/IllustrisTNG"
 
-PARAMS_URL = "https://users.flatironinstitute.org/~fvillaescusa/priv/DEPnzxoWlaTQ6CjrXqsm0vYi8L7Jy/CMD/2D_maps/data"
+CAMELS_PARAMS_RAW = (
+    "https://raw.githubusercontent.com/franciscovillaescusa/CAMELS/master"
+    "/docs/params/IllustrisTNG/CosmoAstroSeed_IllustrisTNG_L25n256_LH.txt"
+)
 
 FILES = {
     "CV": [
@@ -20,10 +25,6 @@ FILES = {
         "Maps_Mcdm_IllustrisTNG_LH_z=0.00.npy",
         "Maps_Mtot_IllustrisTNG_LH_z=0.00.npy",
     ],
-}
-
-PARAMS = {
-    "LH": ("params_LH_IllustrisTNG.txt", f"{PARAMS_URL}/params_LH_IllustrisTNG.txt"),
 }
 
 
@@ -49,13 +50,17 @@ def download(dataset: str, data_dir: Path):
         with ProgressBar(unit="B", unit_scale=True, desc=filename) as pbar:
             urllib.request.urlretrieve(url, dest, reporthook=pbar.update_to)
     
-    if dataset in PARAMS:
-        pname, purl = PARAMS[dataset]
-        dest = data_dir / pname
-        if not dest.exists():
-            print(f"Downloading: {pname}")
-            with ProgressBar(unit="B", unit_scale=True, desc=pname) as pbar:
-                urllib.request.urlretrieve(purl, dest, reporthook=pbar.update_to)
+    if dataset == "LH":
+        params_dest = data_dir / "params_LH_IllustrisTNG.txt"
+        if not params_dest.exists():
+            raw_file = data_dir / "_CosmoAstroSeed_LH_raw.txt"
+            print("Downloading LH params from CAMELS GitHub...")
+            urllib.request.urlretrieve(CAMELS_PARAMS_RAW, raw_file)
+            data = np.genfromtxt(raw_file, dtype=str, comments="#")
+            params = data[:, 1:7].astype(np.float32)
+            np.savetxt(params_dest, params, fmt="%.5f")
+            raw_file.unlink()
+            print(f"Saved {params.shape[0]} x {params.shape[1]} params to {params_dest}")
 
 
 def main():
