@@ -1,5 +1,6 @@
 use num_complex::Complex;
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use rustfft::FftPlanner;
 
@@ -30,14 +31,14 @@ impl ParticleSet {
     }
 
     /// Initializes particle positions and velocities using the Zel'dovich Approximation.
-    /// This is a physically motivated method based on linear perturbation theory.
     /// Uses proper 3D FFT via batched 1D transforms along each axis.
-    pub fn initialize_zeldovich(&mut self, grid_res: usize, box_size: f32) {
+    /// P(k) ~ k^(-1.5) for CDM-like clustering at Mpc scales.
+    pub fn initialize_zeldovich(&mut self, grid_res: usize, box_size: f32, seed: u64) {
         self.box_size = box_size;
         let n = grid_res;
         let num_particles = n * n * n;
         self.particles = Vec::with_capacity(num_particles);
-        let mut rng = rand::rng();
+        let mut rng = StdRng::seed_from_u64(seed);
 
         // Set up 1D FFT plans for 3D transform (batched along each axis)
         let mut planner = FftPlanner::new();
@@ -122,12 +123,11 @@ impl ParticleSet {
                     let idx = (ix * n + iy) * n + iz;
 
                     if k_mag_sq < 1e-6 {
-                        // DC mode: set to zero (no mean overdensity)
                         density[idx] = Complex::new(0.0, 0.0);
                     } else {
-                        // Apply P(k) ~ k^(-1.5) weighting for realistic structure
-                        let p_k = k_mag_sq.powf(-0.75); // sqrt(P(k))
-                        density[idx] *= p_k;
+                        // P(k) ~ k^-1.5 => amplitude ~ k^-0.75 = (k^2)^-0.375
+                        let amplitude = k_mag_sq.powf(-0.375);
+                        density[idx] *= amplitude;
                     }
                 }
             }
@@ -164,7 +164,8 @@ impl ParticleSet {
                     let idx = (ix * n + iy) * n + iz;
 
                     if k_mag_sq > 1e-6 {
-                        let factor = Complex::new(0.0, -1.0) / k_mag_sq; // -i/k² (note sign for IFFT convention)
+                        // Psi_i(k) = i * k_i * delta(k) / k^2
+                        let factor = Complex::new(0.0, 1.0) / k_mag_sq;
                         disp_x[idx] = density[idx] * kx * factor;
                         disp_y[idx] = density[idx] * ky * factor;
                         disp_z[idx] = density[idx] * kz * factor;

@@ -1,53 +1,13 @@
 //! # Bayronik Core
 //!
-//! A high-performance N-body Particle-Mesh (PM) simulation engine for cosmological
-//! structure formation, designed to solve the baryonic feedback problem in weak lensing.
+//! Particle-Mesh N-body simulation engine for cosmological structure formation.
 //!
-//! ## Overview
+//! Implements a PM scheme with CIC mass assignment, FFT-based Poisson solver,
+//! and KDK symplectic leapfrog integration. Zel'dovich approximation provides
+//! cosmologically-motivated initial conditions with a CDM-like power spectrum.
 //!
-//! Bayronik addresses a critical efficiency bottleneck in modern cosmology: precision
-//! measurements of universe parameters (Dark Matter density Ωm, clumpiness σ8) rely on
-//! weak gravitational lensing, but are systematically biased by "baryonic physics"—messy,
-//! non-gravitational processes like supernova explosions and AGN feedback that violently
-//! redistribute gas and matter on large scales.
-//!
-//! ## Architecture
-//!
-//! The engine implements a classic PM N-body scheme:
-//!
-//! 1. **Mass Assignment**: Particles deposit mass onto a 3D grid using Cloud-in-Cell (CIC)
-//!    interpolation for smooth density fields
-//! 2. **Poisson Solver**: FFT-based gravity solver computes potential φ where ∇²φ = 4πGρ
-//! 3. **Force Calculation**: Forces derived via finite differences F = -∇φ
-//! 4. **Time Integration**: Symplectic Kick-Drift-Kick leapfrog with periodic boundaries
-//! 5. **Projection**: 3D → 2D surface density maps via CIC for weak lensing analysis
-//!
-//! ## Initial Conditions
-//!
-//! Supports Zel'dovich approximation for cosmologically-motivated initial conditions,
-//! generating correlated particle displacements from a Gaussian random field with
-//! CDM-like power spectrum P(k) ~ k^(-1.5).
-//!
-//! ## Example
-//!
-//! ```rust,ignore
-//! use bayronik_core::{run_simulation, ParticleSet, Grid, FftSolver};
-//!
-//! // Run a complete simulation
-//! let map = run_simulation(
-//!     32_768,  // num_particles (ignored with Zel'dovich ICs)
-//!     64,      // grid_resolution (also sets IC grid)
-//!     100.0,   // box_size in Mpc/h
-//!     0.01,    // time_step
-//!     100,     // num_steps
-//!     256,     // output projection resolution
-//! );
-//! ```
-//!
-//! ## Physics References
-//!
-//! - Hockney & Eastwood (1988) - Computer Simulation Using Particles
-//! - Zel'dovich (1970) - Gravitational instability approximation
+//! The output is a 2D surface density map suitable as input for the Bayronik
+//! baryonic field emulator.
 
 pub mod output;
 pub mod sim;
@@ -58,9 +18,12 @@ pub use sim::gravity;
 pub use sim::grid::Grid;
 pub use sim::particle::ParticleSet;
 
-/// Run a complete N-body simulation and return 2D projection.
+/// Run a complete N-body simulation and return a 2D projected density map.
+///
+/// The simulation uses Zel'dovich ICs on a grid of `grid_resolution^3`
+/// particles, evolved with KDK leapfrog for `num_steps` timesteps.
 pub fn run_simulation(
-    _num_particles: usize,
+    seed: u64,
     grid_resolution: usize,
     box_size: f32,
     time_step: f32,
@@ -68,50 +31,40 @@ pub fn run_simulation(
     projection_res: usize,
 ) -> Vec<f32> {
     let mut particles = ParticleSet::new();
-    // Zel'dovich ICs: grid_resolution sets both IC grid and force grid
-    // Actual particle count = grid_resolution^3
-    particles.initialize_zeldovich(grid_resolution, box_size);
+    particles.initialize_zeldovich(grid_resolution, box_size, seed);
 
     let mut grid = Grid::new(grid_resolution, box_size);
     let mut fft_solver = FftSolver::new(grid_resolution);
 
-    // Add gravitational amplification factor to grow perturbations faster
-    let growth_factor = 2.5;
+    let gravity_strength = 2.5;
 
     for _ in 0..num_steps {
+        // Compute forces at current positions
         grid.clear_density();
         gravity::assign_mass_cic(&particles, &mut grid);
         fft_solver.solve_potential(&mut grid);
 
         let (mut fx, mut fy, mut fz) = forces::calculate_forces_from_potential(&grid);
-
-        // Amplify gravitational forces to accelerate structure formation
-        for f in &mut fx {
-            *f *= growth_factor;
-        }
-        for f in &mut fy {
-            *f *= growth_factor;
-        }
-        for f in &mut fz {
-            *f *= growth_factor;
-        }
-
+        for f in &mut fx { *f *= gravity_strength; }
+        for f in &mut fy { *f *= gravity_strength; }
+        for f in &mut fz { *f *= gravity_strength; }
         forces::interpolate_forces_to_particles(&mut particles, &grid, &fx, &fy, &fz);
 
+        // Half-kick + full drift
         particles.integrate(time_step);
 
-        let (mut fx, mut fy, mut fz) = forces::calculate_forces_from_potential(&grid);
-        for f in &mut fx {
-            *f *= growth_factor;
-        }
-        for f in &mut fy {
-            *f *= growth_factor;
-        }
-        for f in &mut fz {
-            *f *= growth_factor;
-        }
+        // Recompute forces at new positions (proper KDK)
+        grid.clear_density();
+        gravity::assign_mass_cic(&particles, &mut grid);
+        fft_solver.solve_potential(&mut grid);
 
+        let (mut fx, mut fy, mut fz) = forces::calculate_forces_from_potential(&grid);
+        for f in &mut fx { *f *= gravity_strength; }
+        for f in &mut fy { *f *= gravity_strength; }
+        for f in &mut fz { *f *= gravity_strength; }
         forces::interpolate_forces_to_particles(&mut particles, &grid, &fx, &fy, &fz);
+
+        // Second half-kick
         particles.kick(time_step);
     }
 

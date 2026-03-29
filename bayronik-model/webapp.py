@@ -91,7 +91,7 @@ def run_inference(model, device, input_map: np.ndarray, params: dict) -> np.ndar
 
 
 def run_nbody(grid_res: int = 64, box_size: float = 100.0,
-              steps: int = 10, proj_res: int = 256):
+              steps: int = 10, proj_res: int = 256, seed: int = 42):
     """Run N-body simulation via the bayronik-core binary."""
     if not NBODY_BIN.exists():
         return None, (
@@ -106,7 +106,7 @@ def run_nbody(grid_res: int = 64, box_size: float = 100.0,
                 [
                     str(NBODY_BIN),
                     str(grid_res), str(box_size),
-                    str(steps), str(proj_res), out_file,
+                    str(steps), str(proj_res), out_file, str(seed),
                 ],
                 capture_output=True, text=True, timeout=120,
                 cwd=tmpdir,
@@ -450,14 +450,15 @@ def tab_nbody(model, device, log_scale, cmap, manual_params):
     if not NBODY_BIN.exists():
         st.warning("N-body binary not found. Run `make build-nbody` first.")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     grid_res = c1.select_slider("Grid resolution", [32, 64, 128], value=64)
     box_size = c2.slider("Box size (Mpc/h)", 50.0, 500.0, 100.0, 25.0)
     n_steps = c3.slider("Time steps", 5, 50, 10)
+    seed = c4.number_input("RNG Seed", value=42, min_value=0, max_value=99999)
 
     if st.button("Run N-Body + Emulator", type="primary", key="nbody_run"):
         with st.spinner("Running N-body simulation..."):
-            nbody_map, err = run_nbody(grid_res, box_size, n_steps)
+            nbody_map, err = run_nbody(grid_res, box_size, n_steps, seed=int(seed))
         if err:
             st.error(err)
             return

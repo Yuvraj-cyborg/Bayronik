@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -88,7 +88,7 @@ async def health():
 @app.post("/infer", response_model=InferenceResponse)
 async def infer(request: InferenceRequest):
     if MODEL is None:
-        return {"error": "Model not loaded"}
+        raise HTTPException(status_code=503, detail="Model not loaded")
     
     input_array = np.array(request.input_map, dtype=np.float32)
     h, w = input_array.shape
@@ -132,13 +132,22 @@ async def infer_npy(
 ):
     """Accept .npy file upload, return .npy output."""
     if MODEL is None:
-        return {"error": "Model not loaded"}
+        raise HTTPException(status_code=503, detail="Model not loaded")
     
     content = await file.read()
-    input_array = np.load(io.BytesIO(content))
+    try:
+        input_array = np.load(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid npy file: {e}")
     
     if input_array.ndim == 2:
         input_array = input_array[np.newaxis, ...]
+    
+    if input_array.ndim != 3 or input_array.shape[1] != 256 or input_array.shape[2] != 256:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Expected shape (N, 256, 256), got {input_array.shape}",
+        )
     
     results = []
     for i in range(input_array.shape[0]):
@@ -153,7 +162,8 @@ async def infer_npy(
         with torch.no_grad():
             output_tensor = MODEL(input_tensor, conditions)
         
-        results.append(output_tensor.squeeze().cpu().numpy())
+        output_log = output_tensor.squeeze().cpu().numpy()
+        results.append(np.expm1(output_log))
     
     output_array = np.stack(results) if len(results) > 1 else results[0]
     

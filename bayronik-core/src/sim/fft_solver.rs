@@ -1,115 +1,162 @@
-//! This module will contain the logic for solving gravity on the grid using FFT.
-
 use super::grid::Grid;
 use num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
 
-/// A solver that computes the gravitational potential from a density field
-/// using a Fast Fourier Transform (FFT).
+/// FFT-based Poisson solver for the gravitational potential.
+///
+/// Uses batched 1D FFTs along each axis to perform a proper 3D transform,
+/// then applies the continuous Green's function phi_k = -delta_k / k^2.
 pub struct FftSolver {
     resolution: usize,
     forward_plan: Arc<dyn Fft<f32>>,
     inverse_plan: Arc<dyn Fft<f32>>,
-    // Buffer to hold the data in complex form for the FFT
-    fft_buffer: Vec<Complex<f32>>,
+    buffer: Vec<Complex<f32>>,
 }
 
 impl FftSolver {
-    /// Creates a new FFT solver for a given grid resolution.
     pub fn new(resolution: usize) -> Self {
         let mut planner = FftPlanner::new();
         let total_cells = resolution * resolution * resolution;
 
-        // Create plans for forward and inverse FFTs.
-        // These are pre-computed for efficiency.
-        let forward_plan = planner.plan_fft_forward(total_cells);
-        let inverse_plan = planner.plan_fft_inverse(total_cells);
+        let forward_plan = planner.plan_fft_forward(resolution);
+        let inverse_plan = planner.plan_fft_inverse(resolution);
 
         Self {
             resolution,
             forward_plan,
             inverse_plan,
-            fft_buffer: vec![Complex::new(0.0, 0.0); total_cells],
+            buffer: vec![Complex::new(0.0, 0.0); total_cells],
         }
     }
 
-    /// Solves for the gravitational potential given the density grid.
+    /// Solve nabla^2 phi = delta on the grid.
     ///
-    /// This is the core of the Particle-Mesh method. The steps are:
-    /// 1. Forward FFT of the density grid.
-    /// 2. Apply the Green's function for gravity in Fourier space.
-    ///    (This is just a multiplication).
-    /// 3. Inverse FFT to get the potential back in real space.
+    /// Transforms density_contrast to Fourier space, applies the Green's
+    /// function phi_k = -delta_k / k^2, and transforms back. The result
+    /// is written into grid.potential.
     pub fn solve_potential(&mut self, grid: &mut Grid) {
-        // Step 1: Copy density data to our complex buffer
-        for (i, density_val) in grid.density_contrast.iter().enumerate() {
-            self.fft_buffer[i] = Complex::new(*density_val, 0.0);
+        let n = self.resolution;
+
+        for (i, d) in grid.density_contrast.iter().enumerate() {
+            self.buffer[i] = Complex::new(*d, 0.0);
         }
 
-        // Step 2: Perform the forward FFT (in-place)
-        self.forward_plan.process(&mut self.fft_buffer);
+        self.fft3d_forward();
 
-        // Step 3: Apply the Green's function in Fourier space.
-        // The potential_k = - density_k / (k^2)
-        // We need to calculate the wave vector 'k' for each mode.
-        let _n = self.resolution as f32;
         let k_factor = 2.0 * std::f32::consts::PI / grid.box_size;
 
-        for i in 0..self.fft_buffer.len() {
-            let (kx, ky, kz) = self.get_k_vector(i, k_factor);
-            let k_squared = kx * kx + ky * ky + kz * kz;
+        for ix in 0..n {
+            for iy in 0..n {
+                for iz in 0..n {
+                    let kx = freq(ix, n) as f32 * k_factor;
+                    let ky = freq(iy, n) as f32 * k_factor;
+                    let kz = freq(iz, n) as f32 * k_factor;
+                    let k_sq = kx * kx + ky * ky + kz * kz;
 
-            // Avoid division by zero for the k=0 mode (the DC component).
-            // The mean density contrast is zero, so this mode should be zero anyway.
-            if k_squared > 1e-6 {
-                self.fft_buffer[i] /= -k_squared;
-            } else {
-                self.fft_buffer[i] = Complex::new(0.0, 0.0);
+                    let idx = (ix * n + iy) * n + iz;
+                    if k_sq > 1e-10 {
+                        self.buffer[idx] /= -k_sq;
+                    } else {
+                        self.buffer[idx] = Complex::new(0.0, 0.0);
+                    }
+                }
             }
         }
 
-        // The Nyquist frequency requires special handling in some FFT schemes,
-        // but for our purposes, this approximation is sufficient.
+        self.fft3d_inverse();
 
-        // Step 4: Perform the inverse FFT to get the potential in real space
-        self.inverse_plan.process(&mut self.fft_buffer);
-
-        // Step 5: Copy the real part of the result back to the grid's potential field
-        // and normalize it.
-        let normalization = 1.0 / (self.resolution * self.resolution * self.resolution) as f32;
-        for i in 0..grid.potential.len() {
-            grid.potential[i] = self.fft_buffer[i].re * normalization;
+        let norm = 1.0 / (n * n * n) as f32;
+        for (i, pot) in grid.potential.iter_mut().enumerate() {
+            *pot = self.buffer[i].re * norm;
         }
     }
 
-    /// Helper function to get the (kx, ky, kz) wave vector for a given index
-    /// in the 1D flattened FFT output array.
-    fn get_k_vector(&self, index: usize, k_factor: f32) -> (f32, f32, f32) {
+    /// Forward 3D FFT via batched 1D transforms along z, y, x.
+    fn fft3d_forward(&mut self) {
         let n = self.resolution;
-        let iz = index % n;
-        let iy = (index / n) % n;
-        let ix = index / (n * n);
 
-        // FFT frequencies need to be "shifted" to represent negative and positive frequencies.
-        // For a dimension of size N, indices 0..N/2 correspond to positive frequencies,
-        // and N/2..N-1 correspond to negative frequencies.
-        let kx = if ix > n / 2 {
-            ix as i32 - n as i32
-        } else {
-            ix as i32
-        } as f32;
-        let ky = if iy > n / 2 {
-            iy as i32 - n as i32
-        } else {
-            iy as i32
-        } as f32;
-        let kz = if iz > n / 2 {
-            iz as i32 - n as i32
-        } else {
-            iz as i32
-        } as f32;
+        for ix in 0..n {
+            for iy in 0..n {
+                let off = (ix * n + iy) * n;
+                let mut row: Vec<Complex<f32>> = self.buffer[off..off + n].to_vec();
+                self.forward_plan.process(&mut row);
+                self.buffer[off..off + n].copy_from_slice(&row);
+            }
+        }
 
-        (kx * k_factor, ky * k_factor, kz * k_factor)
+        for ix in 0..n {
+            for iz in 0..n {
+                let mut col = vec![Complex::new(0.0, 0.0); n];
+                for iy in 0..n {
+                    col[iy] = self.buffer[(ix * n + iy) * n + iz];
+                }
+                self.forward_plan.process(&mut col);
+                for iy in 0..n {
+                    self.buffer[(ix * n + iy) * n + iz] = col[iy];
+                }
+            }
+        }
+
+        for iy in 0..n {
+            for iz in 0..n {
+                let mut col = vec![Complex::new(0.0, 0.0); n];
+                for ix in 0..n {
+                    col[ix] = self.buffer[(ix * n + iy) * n + iz];
+                }
+                self.forward_plan.process(&mut col);
+                for ix in 0..n {
+                    self.buffer[(ix * n + iy) * n + iz] = col[ix];
+                }
+            }
+        }
+    }
+
+    /// Inverse 3D FFT via batched 1D transforms along x, y, z.
+    fn fft3d_inverse(&mut self) {
+        let n = self.resolution;
+
+        for iy in 0..n {
+            for iz in 0..n {
+                let mut col = vec![Complex::new(0.0, 0.0); n];
+                for ix in 0..n {
+                    col[ix] = self.buffer[(ix * n + iy) * n + iz];
+                }
+                self.inverse_plan.process(&mut col);
+                for ix in 0..n {
+                    self.buffer[(ix * n + iy) * n + iz] = col[ix];
+                }
+            }
+        }
+
+        for ix in 0..n {
+            for iz in 0..n {
+                let mut col = vec![Complex::new(0.0, 0.0); n];
+                for iy in 0..n {
+                    col[iy] = self.buffer[(ix * n + iy) * n + iz];
+                }
+                self.inverse_plan.process(&mut col);
+                for iy in 0..n {
+                    self.buffer[(ix * n + iy) * n + iz] = col[iy];
+                }
+            }
+        }
+
+        for ix in 0..n {
+            for iy in 0..n {
+                let off = (ix * n + iy) * n;
+                let mut row: Vec<Complex<f32>> = self.buffer[off..off + n].to_vec();
+                self.inverse_plan.process(&mut row);
+                self.buffer[off..off + n].copy_from_slice(&row);
+            }
+        }
+    }
+}
+
+fn freq(i: usize, n: usize) -> i32 {
+    if i > n / 2 {
+        i as i32 - n as i32
+    } else {
+        i as i32
     }
 }

@@ -9,6 +9,8 @@ from tqdm import tqdm
 
 BASE_URL = "https://users.flatironinstitute.org/~fvillaescusa/priv/DEPnzxoWlaTQ6CjrXqsm0vYi8L7Jy/CMD/2D_maps/data/IllustrisTNG"
 
+PARAMS_URL = "https://users.flatironinstitute.org/~fvillaescusa/priv/DEPnzxoWlaTQ6CjrXqsm0vYi8L7Jy/CMD/2D_maps/data"
+
 FILES = {
     "CV": [
         "Maps_Mcdm_IllustrisTNG_CV_z=0.00.npy",
@@ -18,6 +20,10 @@ FILES = {
         "Maps_Mcdm_IllustrisTNG_LH_z=0.00.npy",
         "Maps_Mtot_IllustrisTNG_LH_z=0.00.npy",
     ],
+}
+
+PARAMS = {
+    "LH": ("params_LH_IllustrisTNG.txt", f"{PARAMS_URL}/params_LH_IllustrisTNG.txt"),
 }
 
 
@@ -42,6 +48,14 @@ def download(dataset: str, data_dir: Path):
         
         with ProgressBar(unit="B", unit_scale=True, desc=filename) as pbar:
             urllib.request.urlretrieve(url, dest, reporthook=pbar.update_to)
+    
+    if dataset in PARAMS:
+        pname, purl = PARAMS[dataset]
+        dest = data_dir / pname
+        if not dest.exists():
+            print(f"Downloading: {pname}")
+            with ProgressBar(unit="B", unit_scale=True, desc=pname) as pbar:
+                urllib.request.urlretrieve(purl, dest, reporthook=pbar.update_to)
 
 
 def main():

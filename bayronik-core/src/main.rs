@@ -3,7 +3,7 @@ use bayronik_core::run_simulation;
 fn main() {
     println!("bayronik-core: N-body PM simulation");
 
-    let map = run_simulation(32_768, 64, 100.0, 0.01, 10, 256);
+    let map = run_simulation(42, 64, 100.0, 0.01, 10, 256);
 
     let mean = map.iter().sum::<f32>() / map.len() as f32;
     let max = map.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

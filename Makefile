@@ -149,10 +149,10 @@ build: build-core build-nbody $(INFER_BIN) $(WEB_BIN)
 	@echo "All builds complete"
 
 build-core:
-	cd bayronik-core && cargo build --release
+	unset CARGO_TARGET_DIR && cargo build --release -p bayronik-core
 
 build-nbody:
-	cd bayronik-core && cargo build --release --examples
+	unset CARGO_TARGET_DIR && cargo build --release -p bayronik-core --examples
 
 build-infer: $(INFER_BIN)
 

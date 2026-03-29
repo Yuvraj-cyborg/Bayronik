@@ -533,7 +533,7 @@ def main():
     parser.add_argument("--workers", type=int, default=4, help="Data loading workers")
     parser.add_argument("--weights-dir", type=str, default="weights", help="Weights directory")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
-    parser.add_argument("--amp", action="store_true", default=True, help="Use automatic mixed precision")
+    parser.add_argument("--amp", action="store_true", default=False, help="Use automatic mixed precision")
     parser.add_argument("--no-amp", dest="amp", action="store_false", help="Disable AMP")
     parser.add_argument("--augment", action="store_true", default=True, help="Use data augmentation")
     
