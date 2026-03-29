@@ -10,7 +10,7 @@ use heatmap::HeatmapWidget;
 use npyz::NpyFile;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Tabs},
 };
 use std::{
     fs::File,
@@ -19,22 +19,57 @@ use std::{
 };
 use tch::{Device, Tensor, kind::Kind};
 
-enum DataSource {
-    CamelsCV,
-    NBodyGenerated,
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Maps,
+    NBody,
+    Help,
+}
+
+impl Tab {
+    const ALL: [Tab; 3] = [Tab::Maps, Tab::NBody, Tab::Help];
+
+    fn title(self) -> &'static str {
+        match self {
+            Tab::Maps => "CAMELS Maps",
+            Tab::NBody => "N-Body Sim",
+            Tab::Help => "Help",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Tab::Maps => 0,
+            Tab::NBody => 1,
+            Tab::Help => 2,
+        }
+    }
 }
 
 struct App {
+    tab: Tab,
     input_map: Tensor,
     output_map: Tensor,
+    diff_map: Tensor,
     all_input_maps: Vec<f32>,
-    current_sim_idx: usize,
+    current_idx: usize,
     total_sims: usize,
     model: tch::CModule,
     device: Device,
-    conditions: Tensor,
-    data_source: DataSource,
-    status_message: String,
+
+    omega_m: f32,
+    sigma_8: f32,
+    a_sn1: f32,
+    a_agn1: f32,
+    a_sn2: f32,
+    a_agn2: f32,
+
+    nbody_grid: usize,
+    nbody_box: f32,
+    nbody_steps: usize,
+    nbody_seed: u64,
+    is_nbody: bool,
+    status: String,
 }
 
 impl App {
@@ -42,136 +77,116 @@ impl App {
         println!("Loading dataset and TorchScript model...");
 
         let npy_path = "../bayronik-model/data/Maps_Mcdm_IllustrisTNG_CV_z=0.00.npy";
-        println!("   Loading: {}", npy_path);
+        println!("  Loading: {}", npy_path);
 
         let reader = File::open(npy_path)
             .with_context(|| format!("Failed to open NPY file at '{}'", npy_path))?;
-        let npy_file =
-            NpyFile::new(reader).with_context(|| "Failed to parse NPY file structure.")?;
-
+        let npy_file = NpyFile::new(reader).context("Failed to parse NPY")?;
         let all_data: Vec<f32> = npy_file.into_vec()?;
         let total_sims = all_data.len() / (256 * 256);
-        println!("   Loaded {} simulations", total_sims);
+        println!("  Loaded {} simulations", total_sims);
 
         let model_path = "../bayronik-model/weights/bayronik_ufno_cond.pt";
-        println!("   Loading model: {}", model_path);
+        println!("  Loading model: {}", model_path);
         let device = Device::cuda_if_available();
         let model = tch::CModule::load_on_device(model_path, device)
-            .with_context(|| format!("Failed to load TorchScript model from '{}'", model_path))?;
-        println!("   Model loaded on {:?}", device);
+            .with_context(|| format!("Failed to load TorchScript from '{}'", model_path))?;
+        println!("  Model loaded on {:?}", device);
 
-        let first_sim_data = &all_data[..256 * 256];
-        let input_map_raw = Tensor::from_slice(first_sim_data)
-            .reshape(&[1, 1, 256, 256])
-            .to_kind(Kind::Float);
-
-        // Default cosmological parameters: [Omega_m, sigma_8, A_SN1, A_AGN1, A_SN2, A_AGN2]
-        let conditions = Tensor::from_slice(&[0.3f32, 0.8, 1.0, 1.0, 1.0, 1.0])
-            .reshape(&[1, 6])
-            .to_kind(Kind::Float);
-
-        let input_map = input_map_raw.log1p();
-        let output_map = model.forward_ts(&[input_map.to(device), conditions.to(device)])?.to(Device::Cpu);
-
-        println!("Ready! Use ← → arrows to navigate simulations");
-
-        Ok(Self {
-            input_map,
-            output_map,
+        let mut app = Self {
+            tab: Tab::Maps,
+            input_map: Tensor::zeros(&[1, 1, 256, 256], (Kind::Float, Device::Cpu)),
+            output_map: Tensor::zeros(&[1, 1, 256, 256], (Kind::Float, Device::Cpu)),
+            diff_map: Tensor::zeros(&[1, 1, 256, 256], (Kind::Float, Device::Cpu)),
             all_input_maps: all_data,
-            current_sim_idx: 0,
+            current_idx: 0,
             total_sims,
             model,
             device,
-            conditions,
-            data_source: DataSource::CamelsCV,
-            status_message: String::new(),
-        })
+            omega_m: 0.3,
+            sigma_8: 0.8,
+            a_sn1: 1.0,
+            a_agn1: 1.0,
+            a_sn2: 1.0,
+            a_agn2: 1.0,
+            nbody_grid: 64,
+            nbody_box: 100.0,
+            nbody_steps: 80,
+            nbody_seed: 42,
+            is_nbody: false,
+            status: String::new(),
+        };
+        app.load_sim(0)?;
+        println!("Ready!");
+        Ok(app)
     }
 
-    fn generate_nbody_map(&self) -> Vec<f32> {
-        bayronik_core::run_simulation(
-            64,    // Initial condition grid resolution (e.g., 64^3 particles)
-            64,    // Simulation grid resolution
-            100.0, // 100 Mpc box
-            0.005, // Smaller timestep for stability
-            80,    // More steps for better structure
-            256,   // 256x256 output resolution
-        )
+    fn conditions_tensor(&self) -> Tensor {
+        Tensor::from_slice(&[
+            self.omega_m, self.sigma_8,
+            self.a_sn1, self.a_agn1,
+            self.a_sn2, self.a_agn2,
+        ])
+        .reshape(&[1, 6])
+        .to_kind(Kind::Float)
     }
 
-    fn switch_to_nbody(&mut self) -> Result<()> {
-        self.status_message = "Generating N-body simulation...".to_string();
+    fn run_model(&mut self) -> Result<()> {
+        let cond = self.conditions_tensor();
+        self.output_map = self
+            .model
+            .forward_ts(&[self.input_map.to(self.device), cond.to(self.device)])?
+            .to(Device::Cpu);
+        self.diff_map = &self.output_map - &self.input_map;
+        Ok(())
+    }
 
-        let mut nbody_map = self.generate_nbody_map();
+    fn load_sim(&mut self, idx: usize) -> Result<()> {
+        let start = idx * 256 * 256;
+        let sim_data = &self.all_input_maps[start..start + 256 * 256];
+        let raw = Tensor::from_slice(sim_data)
+            .reshape(&[1, 1, 256, 256])
+            .to_kind(Kind::Float);
+        self.input_map = raw.log1p();
+        self.current_idx = idx;
+        self.is_nbody = false;
+        self.run_model()
+    }
 
-        // Compute statistics of a reference CAMELS map in log-space
+    fn run_nbody(&mut self) -> Result<()> {
+        self.status = "Running N-body...".into();
+        let nbody_map = bayronik_core::run_simulation(
+            self.nbody_seed,
+            self.nbody_grid,
+            self.nbody_box,
+            0.005,
+            self.nbody_steps,
+            256,
+        );
+
         let camels_ref = &self.all_input_maps[..256 * 256];
         let camels_log: Vec<f32> = camels_ref.iter().map(|&x| (x + 1.0).ln()).collect();
-        let camels_log_mean = camels_log.iter().sum::<f32>() / camels_log.len() as f32;
-        let camels_log_std = (camels_log
-            .iter()
-            .map(|&x| (x - camels_log_mean).powi(2))
-            .sum::<f32>()
+        let c_mean = camels_log.iter().sum::<f32>() / camels_log.len() as f32;
+        let c_std = (camels_log.iter().map(|x| (x - c_mean).powi(2)).sum::<f32>()
             / camels_log.len() as f32)
             .sqrt();
 
-        // Apply log1p to N-body data
-        let mut nbody_log: Vec<f32> = nbody_map.iter().map(|&x| (x.max(0.0) + 1.0).ln()).collect();
-
-        // Match statistics in log-space (where the model operates)
-        let nbody_log_mean = nbody_log.iter().sum::<f32>() / nbody_log.len() as f32;
-        let nbody_log_std = (nbody_log
-            .iter()
-            .map(|&x| (x - nbody_log_mean).powi(2))
-            .sum::<f32>()
-            / nbody_log.len() as f32)
+        let mut nb_log: Vec<f32> = nbody_map.iter().map(|&x| (x.max(0.0) + 1.0).ln()).collect();
+        let n_mean = nb_log.iter().sum::<f32>() / nb_log.len() as f32;
+        let n_std = (nb_log.iter().map(|x| (x - n_mean).powi(2)).sum::<f32>()
+            / nb_log.len() as f32)
             .sqrt();
 
-        // Standardize N-body log-space to match CAMELS log-space
-        for val in &mut nbody_log {
-            *val = (*val - nbody_log_mean) / nbody_log_std * camels_log_std + camels_log_mean;
+        for v in &mut nb_log {
+            *v = (*v - n_mean) / n_std * c_std + c_mean;
         }
 
-        // Convert back to tensor (already in log-space)
-        self.input_map = Tensor::from_slice(&nbody_log)
+        self.input_map = Tensor::from_slice(&nb_log)
             .reshape(&[1, 1, 256, 256])
             .to_kind(Kind::Float);
-
-        self.output_map = self
-            .model
-            .forward_ts(&[self.input_map.to(self.device), self.conditions.to(self.device)])?
-            .to(Device::Cpu);
-
-        self.data_source = DataSource::NBodyGenerated;
-        self.status_message = "N-body simulation complete".to_string();
-        Ok(())
-    }
-
-    fn switch_to_camels(&mut self) -> Result<()> {
-        self.status_message = "Switching to CAMELS data...".to_string();
-        self.load_simulation(0)?;
-        self.data_source = DataSource::CamelsCV;
-        self.status_message = String::new();
-        Ok(())
-    }
-
-    fn load_simulation(&mut self, idx: usize) -> Result<()> {
-        let start = idx * 256 * 256;
-        let end = start + 256 * 256;
-        let sim_data = &self.all_input_maps[start..end];
-
-        let input_map_raw = Tensor::from_slice(sim_data)
-            .reshape(&[1, 1, 256, 256])
-            .to_kind(Kind::Float);
-
-        self.input_map = input_map_raw.log1p();
-        self.output_map = self
-            .model
-            .forward_ts(&[self.input_map.to(self.device), self.conditions.to(self.device)])?
-            .to(Device::Cpu);
-
-        self.current_sim_idx = idx;
+        self.is_nbody = true;
+        self.run_model()?;
+        self.status = "N-body done".into();
         Ok(())
     }
 }
@@ -179,134 +194,279 @@ impl App {
 fn main() -> Result<()> {
     let app = App::new()?;
     let mut terminal = setup_terminal()?;
-    let result = run_app_logic(&mut terminal, app);
+    let result = run_loop(&mut terminal, app);
     restore_terminal(&mut terminal)?;
-    if let Err(err) = result {
-        println!("Error: {:?}", err);
+    if let Err(e) = result {
+        eprintln!("Error: {e:?}");
     }
     Ok(())
 }
 
-fn run_app_logic(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
+fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> Result<()> {
+    let tick = Duration::from_millis(100);
     let mut last_tick = Instant::now();
-    let tick_rate = Duration::from_millis(250);
 
     loop {
-        terminal.draw(|f| ui(f, &app))?;
-        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if crossterm::event::poll(timeout)? {
+        terminal.draw(|f| draw(f, &app))?;
+        let timeout = tick.saturating_sub(last_tick.elapsed());
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Right | KeyCode::Char('n') => {
-                        if matches!(app.data_source, DataSource::CamelsCV) {
-                            let next_idx = (app.current_sim_idx + 1) % app.total_sims;
-                            app.load_simulation(next_idx)?;
-                        }
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+
+                    // Tab switching
+                    KeyCode::Tab => {
+                        app.tab = match app.tab {
+                            Tab::Maps => Tab::NBody,
+                            Tab::NBody => Tab::Help,
+                            Tab::Help => Tab::Maps,
+                        };
                     }
-                    KeyCode::Left | KeyCode::Char('p') => {
-                        if matches!(app.data_source, DataSource::CamelsCV) {
-                            let prev_idx = if app.current_sim_idx == 0 {
-                                app.total_sims - 1
-                            } else {
-                                app.current_sim_idx - 1
-                            };
-                            app.load_simulation(prev_idx)?;
-                        }
+                    KeyCode::BackTab => {
+                        app.tab = match app.tab {
+                            Tab::Maps => Tab::Help,
+                            Tab::NBody => Tab::Maps,
+                            Tab::Help => Tab::NBody,
+                        };
                     }
-                    KeyCode::Char('r') => {
-                        if matches!(app.data_source, DataSource::CamelsCV) {
-                            use rand::Rng;
-                            let random_idx = rand::thread_rng().gen_range(0..app.total_sims);
-                            app.load_simulation(random_idx)?;
-                        }
+                    KeyCode::Char('1') => app.tab = Tab::Maps,
+                    KeyCode::Char('2') => app.tab = Tab::NBody,
+                    KeyCode::Char('3') => app.tab = Tab::Help,
+
+                    // Maps tab controls
+                    KeyCode::Right | KeyCode::Char('n') if app.tab == Tab::Maps => {
+                        let next = (app.current_idx + 1) % app.total_sims;
+                        let _ = app.load_sim(next);
                     }
-                    KeyCode::Char('g') => {
-                        terminal.draw(|f| {
-                            app.status_message = "Generating N-body simulation...".to_string();
-                            ui(f, &app);
-                        })?;
-                        app.switch_to_nbody()?;
+                    KeyCode::Left | KeyCode::Char('p') if app.tab == Tab::Maps => {
+                        let prev = if app.current_idx == 0 { app.total_sims - 1 } else { app.current_idx - 1 };
+                        let _ = app.load_sim(prev);
                     }
-                    KeyCode::Char('c') => {
-                        app.switch_to_camels()?;
+                    KeyCode::Char('r') if app.tab == Tab::Maps => {
+                        use rand::Rng;
+                        let idx = rand::rng().random_range(0..app.total_sims);
+                        let _ = app.load_sim(idx);
                     }
+
+                    // N-Body tab controls
+                    KeyCode::Char('g') | KeyCode::Enter if app.tab == Tab::NBody => {
+                        app.status = "Generating N-body...".into();
+                        terminal.draw(|f| draw(f, &app))?;
+                        let _ = app.run_nbody();
+                    }
+                    KeyCode::Up if app.tab == Tab::NBody => {
+                        app.nbody_grid = (app.nbody_grid * 2).min(128);
+                    }
+                    KeyCode::Down if app.tab == Tab::NBody => {
+                        app.nbody_grid = (app.nbody_grid / 2).max(16);
+                    }
+
                     _ => {}
                 }
             }
         }
-        if last_tick.elapsed() >= tick_rate {
+        if last_tick.elapsed() >= tick {
             last_tick = Instant::now();
         }
     }
 }
 
-fn ui(frame: &mut Frame, app: &App) {
-    let main_layout = Layout::default()
+fn draw(frame: &mut Frame, app: &App) {
+    let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Length(4),
-            Constraint::Min(0),
+            Constraint::Length(3),  // tabs
+            Constraint::Min(0),    // content
+            Constraint::Length(1), // footer
         ])
         .split(frame.area());
 
-    let title_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Bayronik: Baryonic Field Emulator")
-        .style(Style::default().fg(Color::Cyan).bold());
-    let title_text = format!(
-        "Model: Trained on 1000 LH sims | Demo: {} CV sims | Values in log-space | Press 'q' to quit",
-        app.total_sims
-    );
-    let title = Paragraph::new(title_text).block(title_block);
-    frame.render_widget(title, main_layout[0]);
-
-    let controls_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Controls")
-        .style(Style::default().fg(Color::Yellow));
-
-    let source_label = match app.data_source {
-        DataSource::CamelsCV => format!("CAMELS CV {}/{}", app.current_sim_idx + 1, app.total_sims),
-        DataSource::NBodyGenerated => {
-            "N-Body Generated (Press 'c' to return to CAMELS)".to_string()
-        }
-    };
-
-    let controls_text = if app.status_message.is_empty() {
-        format!(
-            "{} | [←/→] Nav | [r] Rand | [g] Gen N-body | [c] CAMELS | [q] Quit",
-            source_label
+    // Tab bar
+    let tab_titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.title())).collect();
+    let tabs = Tabs::new(tab_titles)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Bayronik ")
+                .title_style(Style::default().fg(Color::Cyan).bold()),
         )
-    } else {
-        format!("{} | {}", source_label, app.status_message)
+        .highlight_style(Style::default().fg(Color::Yellow).bold())
+        .select(app.tab.index());
+    frame.render_widget(tabs, root[0]);
+
+    // Content
+    match app.tab {
+        Tab::Maps => draw_maps_tab(frame, app, root[1]),
+        Tab::NBody => draw_nbody_tab(frame, app, root[1]),
+        Tab::Help => draw_help_tab(frame, root[1]),
+    }
+
+    // Footer
+    let footer_text = match app.tab {
+        Tab::Maps => "←/→ navigate  r random  1-3 tabs  q quit",
+        Tab::NBody => "g/Enter generate  ↑/↓ grid size  1-3 tabs  q quit",
+        Tab::Help => "Tab switch  1-3 tabs  q quit",
     };
+    let footer = Paragraph::new(footer_text)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, root[2]);
+}
 
-    let controls = Paragraph::new(controls_text)
-        .block(controls_block)
+fn draw_maps_tab(frame: &mut Frame, app: &App, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // params + sample info
+            Constraint::Min(0),   // heatmaps
+        ])
+        .split(area);
+
+    // Info bar
+    let source = if app.is_nbody {
+        "N-Body Generated".to_string()
+    } else {
+        format!("CAMELS CV {}/{}", app.current_idx + 1, app.total_sims)
+    };
+    let info = format!(
+        " {} │ Ωm={:.2}  σ8={:.2}  ASN1={:.1}  AAGN1={:.1}  ASN2={:.1}  AAGN2={:.1}",
+        source, app.omega_m, app.sigma_8, app.a_sn1, app.a_agn1, app.a_sn2, app.a_agn2,
+    );
+    let info_block = Block::default().borders(Borders::ALL).title(" Parameters ");
+    let info_widget = Paragraph::new(info)
+        .block(info_block)
         .style(Style::default().fg(Color::Green));
-    frame.render_widget(controls, main_layout[1]);
+    frame.render_widget(info_widget, layout[0]);
 
-    let maps_layout = Layout::default()
+    // Three heatmaps
+    let maps = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(33),
-            Constraint::Percentage(33),
             Constraint::Percentage(34),
+            Constraint::Percentage(33),
         ])
-        .split(main_layout[2]);
+        .split(layout[1]);
 
-    let input_widget = HeatmapWidget::new(&app.input_map, "Input: Dark Matter (Mcdm)", Color::Blue);
-    frame.render_widget(input_widget, maps_layout[0]);
+    let inp = HeatmapWidget::new(&app.input_map, "Input: Mcdm", Color::Blue);
+    frame.render_widget(inp, maps[0]);
 
-    let output_widget =
-        HeatmapWidget::new(&app.output_map, "Output: Total Matter (Mtot)", Color::Green);
-    frame.render_widget(output_widget, maps_layout[1]);
+    let out = HeatmapWidget::new(&app.output_map, "Output: Mtot", Color::Green);
+    frame.render_widget(out, maps[1]);
 
-    let diff_map = &app.output_map - &app.input_map;
-    let diff_widget = HeatmapWidget::new(&diff_map, "Baryonic Effect (Δ)", Color::Red);
-    frame.render_widget(diff_widget, maps_layout[2]);
+    let diff = HeatmapWidget::new(&app.diff_map, "Baryonic Effect", Color::Red).diverging();
+    frame.render_widget(diff, maps[2]);
+}
+
+fn draw_nbody_tab(frame: &mut Frame, app: &App, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // controls
+            Constraint::Min(0),   // heatmaps
+        ])
+        .split(area);
+
+    // N-body controls
+    let ctrl_text = vec![
+        Line::from(vec![
+            Span::styled(" Grid: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{}³", app.nbody_grid)),
+            Span::styled("  Box: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{:.0} Mpc/h", app.nbody_box)),
+            Span::styled("  Steps: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{}", app.nbody_steps)),
+            Span::styled("  Seed: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!("{}", app.nbody_seed)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Press ", Style::default().fg(Color::DarkGray)),
+            Span::styled("g", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" or ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Enter", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" to generate │ ", Style::default().fg(Color::DarkGray)),
+            Span::styled("↑/↓", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" grid resolution │ ", Style::default().fg(Color::DarkGray)),
+            if !app.status.is_empty() {
+                Span::styled(&app.status, Style::default().fg(Color::Cyan))
+            } else {
+                Span::raw("")
+            },
+        ]),
+    ];
+    let ctrl_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" N-Body Simulator ")
+        .title_style(Style::default().fg(Color::Cyan));
+    let ctrl = Paragraph::new(ctrl_text).block(ctrl_block);
+    frame.render_widget(ctrl, layout[0]);
+
+    if app.is_nbody {
+        let maps = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+            ])
+            .split(layout[1]);
+
+        let inp = HeatmapWidget::new(&app.input_map, "N-Body DM", Color::Blue);
+        frame.render_widget(inp, maps[0]);
+
+        let out = HeatmapWidget::new(&app.output_map, "Emulated Mtot", Color::Green);
+        frame.render_widget(out, maps[1]);
+
+        let diff = HeatmapWidget::new(&app.diff_map, "Baryonic Effect", Color::Red).diverging();
+        frame.render_widget(diff, maps[2]);
+    } else {
+        let msg = Paragraph::new("\n  No N-body result yet. Press 'g' or Enter to generate.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" Output "));
+        frame.render_widget(msg, layout[1]);
+    }
+}
+
+fn draw_help_tab(frame: &mut Frame, area: Rect) {
+    let help = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Bayronik", Style::default().fg(Color::Cyan).bold()),
+            Span::raw(" — Baryonic Field Emulator TUI"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Navigation", Style::default().fg(Color::Yellow).bold())),
+        Line::from("    Tab / Shift+Tab    Switch tabs"),
+        Line::from("    1  2  3            Jump to tab"),
+        Line::from("    q / Esc            Quit"),
+        Line::from(""),
+        Line::from(Span::styled("  CAMELS Maps Tab", Style::default().fg(Color::Yellow).bold())),
+        Line::from("    ← → / p n          Previous / next simulation"),
+        Line::from("    r                  Random simulation"),
+        Line::from(""),
+        Line::from(Span::styled("  N-Body Tab", Style::default().fg(Color::Yellow).bold())),
+        Line::from("    g / Enter          Generate N-body map + run emulator"),
+        Line::from("    ↑ / ↓              Increase / decrease grid resolution"),
+        Line::from(""),
+        Line::from(Span::styled("  Display", Style::default().fg(Color::Yellow).bold())),
+        Line::from("    Maps show log-space density fields (log1p transform)"),
+        Line::from("    Colormap: Inferno (density) │ Diverging (baryonic effect)"),
+        Line::from("    Baryonic Effect = Output − Input (zero-centered)"),
+        Line::from(""),
+        Line::from(Span::styled("  Architecture", Style::default().fg(Color::Yellow).bold())),
+        Line::from("    Model:  Conditional U-FNO with FiLM conditioning"),
+        Line::from("    Data:   CAMELS IllustrisTNG LH (15k maps, 1000 sims)"),
+        Line::from("    N-body: Rust PM code (Zel'dovich + KDK + CIC + FFT Poisson)"),
+        Line::from(""),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Help ")
+        .title_style(Style::default().fg(Color::Cyan));
+    let widget = Paragraph::new(help).block(block);
+    frame.render_widget(widget, area);
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>, io::Error> {

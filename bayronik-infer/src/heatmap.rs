@@ -1,172 +1,195 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color as RatatuiColor;
+use ratatui::style::{Color as RC, Style};
 use ratatui::widgets::{Block, Borders, Widget};
 use tch::Tensor;
 
+/// Half-block heatmap with true-color inferno colormap.
+/// Uses ▀ (upper half block) to pack 2 vertical pixels per terminal cell,
+/// giving 2x vertical resolution with independent fg (top) and bg (bottom) colors.
 pub struct HeatmapWidget<'a> {
     tensor: &'a Tensor,
     title: &'a str,
-    border_color: RatatuiColor,
+    border_color: RC,
+    diverging: bool,
 }
 
 impl<'a> HeatmapWidget<'a> {
-    pub fn new(tensor: &'a Tensor, title: &'a str, border_color: RatatuiColor) -> Self {
-        Self {
-            tensor,
-            title,
-            border_color,
-        }
+    pub fn new(tensor: &'a Tensor, title: &'a str, border_color: RC) -> Self {
+        Self { tensor, title, border_color, diverging: false }
     }
 
-    fn get_data(&self, width: usize, height: usize) -> Option<Vec<f64>> {
-        let original_dims = self.tensor.size();
-        if original_dims.len() < 2 {
-            return None;
-        }
+    pub fn diverging(mut self) -> Self {
+        self.diverging = true;
+        self
+    }
 
-        let (orig_h, orig_w) = if original_dims.len() == 4 {
-            (original_dims[2] as usize, original_dims[3] as usize)
-        } else if original_dims.len() == 3 {
-            (original_dims[1] as usize, original_dims[2] as usize)
-        } else {
-            (original_dims[0] as usize, original_dims[1] as usize)
+    fn extract_flat(&self) -> Option<(Vec<f32>, usize, usize)> {
+        let dims = self.tensor.size();
+        let (h, w) = match dims.len() {
+            4 => (dims[2] as usize, dims[3] as usize),
+            3 => (dims[1] as usize, dims[2] as usize),
+            2 => (dims[0] as usize, dims[1] as usize),
+            _ => return None,
         };
+        let sq = self.tensor.squeeze().contiguous();
+        let n = sq.numel() as usize;
+        let mut buf = vec![0f32; n];
+        sq.copy_data(&mut buf, n);
+        if buf.len() == h * w { Some((buf, w, h)) } else { None }
+    }
 
-        let squeezed = self.tensor.squeeze().contiguous();
-        let data_size = squeezed.numel();
-        let mut data = vec![0.0f32; data_size as usize];
-        squeezed.copy_data(&mut data, data_size as usize);
-
-        if data.len() != orig_h * orig_w {
-            return None;
-        }
-
-        let mut downsampled = vec![0.0; width * height];
-        for y_out in 0..height {
-            for x_out in 0..width {
-                let x_in_start = (x_out * orig_w) / width;
-                let x_in_end = ((x_out + 1) * orig_w) / width;
-                let y_in_start = (y_out * orig_h) / height;
-                let y_in_end = ((y_out + 1) * orig_h) / height;
-
-                let mut sum = 0.0;
-                let mut count = 0;
-                for y in y_in_start..y_in_end {
-                    for x in x_in_start..x_in_end {
-                        sum += data[y * orig_w + x] as f64;
-                        count += 1;
+    fn downsample(src: &[f32], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; dw * dh];
+        for dy in 0..dh {
+            for dx in 0..dw {
+                let x0 = (dx * sw) / dw;
+                let x1 = ((dx + 1) * sw) / dw;
+                let y0 = (dy * sh) / dh;
+                let y1 = ((dy + 1) * sh) / dh;
+                let mut sum = 0.0f64;
+                let mut cnt = 0u32;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        sum += src[y * sw + x] as f64;
+                        cnt += 1;
                     }
                 }
-                if count > 0 {
-                    downsampled[y_out * width + x_out] = sum / count as f64;
-                }
+                out[dy * dw + dx] = if cnt > 0 { (sum / cnt as f64) as f32 } else { 0.0 };
             }
         }
-        Some(downsampled)
+        out
     }
 }
 
 impl Widget for HeatmapWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mean = self.tensor.mean(tch::Kind::Float).double_value(&[]);
-        let std_val = self.tensor.std(true).double_value(&[]);
-        let min_val = self.tensor.min().double_value(&[]);
-        let max_val = self.tensor.max().double_value(&[]);
-
-        let title_text = format!(
-            "{} │ μ={:.2} σ={:.2} [{:.2},{:.2}]",
-            self.title, mean, std_val, min_val, max_val
+        let stats = tensor_stats(self.tensor);
+        let title = format!(
+            " {} │ [{:.2}, {:.2}] μ={:.2} ",
+            self.title, stats.min, stats.max, stats.mean
         );
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(title_text)
-            .border_style(ratatui::style::Style::default().fg(self.border_color));
+            .title(title)
+            .border_style(Style::default().fg(self.border_color));
 
-        let inner_area = block.inner(area);
+        let inner = block.inner(area);
         block.render(area, buf);
 
-        if inner_area.width < 4 || inner_area.height < 4 {
+        if inner.width < 2 || inner.height < 2 {
             return;
         }
 
-        let plot_width = inner_area.width as usize * 2;
-        let plot_height = inner_area.height as usize * 4;
-
-        let data = match self.get_data(plot_width, plot_height) {
+        let (data, sw, sh) = match self.extract_flat() {
             Some(d) => d,
             None => return,
         };
 
-        let data_min = data.iter().cloned().fold(f64::INFINITY, f64::min);
-        let data_max = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let range = if data_max > data_min {
-            data_max - data_min
+        let pw = inner.width as usize;
+        let ph = inner.height as usize * 2; // 2 pixels per cell vertically
+        let pixels = Self::downsample(&data, sw, sh, pw, ph);
+
+        let (vmin, vmax) = if self.diverging {
+            let abs_max = stats.min.abs().max(stats.max.abs()).max(1e-8);
+            (-abs_max, abs_max)
         } else {
-            1.0
+            (stats.min, stats.max)
         };
+        let range = (vmax - vmin).max(1e-8);
 
-        const BRAILLE: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+        for cy in 0..inner.height as usize {
+            for cx in 0..pw {
+                let top_idx = (cy * 2) * pw + cx;
+                let bot_idx = (cy * 2 + 1) * pw + cx;
 
-        for cell_y in 0..inner_area.height {
-            for cell_x in 0..inner_area.width {
-                let mut braille_char = 0x2800u32;
-
-                for dot_y in 0..4 {
-                    for dot_x in 0..2 {
-                        let pixel_x = cell_x as usize * 2 + dot_x;
-                        let pixel_y = cell_y as usize * 4 + dot_y;
-
-                        if pixel_x < plot_width && pixel_y < plot_height {
-                            let idx = pixel_y * plot_width + pixel_x;
-                            let val = data[idx];
-                            let normalized = ((val - data_min) / range).clamp(0.0, 1.0);
-
-                            if normalized > 0.25 {
-                                braille_char |= BRAILLE[dot_y][dot_x] as u32;
-                            }
-                        }
-                    }
-                }
-
-                let ch = char::from_u32(braille_char).unwrap_or('?');
-                let color = {
-                    let mut sum = 0.0;
-                    let mut count = 0;
-                    for dot_y in 0..4 {
-                        for dot_x in 0..2 {
-                            let pixel_x = cell_x as usize * 2 + dot_x;
-                            let pixel_y = cell_y as usize * 4 + dot_y;
-                            if pixel_x < plot_width && pixel_y < plot_height {
-                                sum += data[pixel_y * plot_width + pixel_x];
-                                count += 1;
-                            }
-                        }
-                    }
-                    let avg = if count > 0 { sum / count as f64 } else { 0.0 };
-                    let normalized = ((avg - data_min) / range).clamp(0.0, 1.0);
-
-                    if normalized < 0.2 {
-                        RatatuiColor::Rgb(50, 50, 80)
-                    } else if normalized < 0.4 {
-                        RatatuiColor::Rgb(80, 100, 180)
-                    } else if normalized < 0.6 {
-                        RatatuiColor::Rgb(150, 180, 220)
-                    } else if normalized < 0.8 {
-                        RatatuiColor::Rgb(255, 200, 100)
-                    } else {
-                        RatatuiColor::Rgb(255, 100, 100)
-                    }
+                let t_top = ((pixels[top_idx] - vmin) / range).clamp(0.0, 1.0);
+                let t_bot = if bot_idx < pixels.len() {
+                    ((pixels[bot_idx] - vmin) / range).clamp(0.0, 1.0)
+                } else {
+                    t_top
                 };
 
-                let screen_x = inner_area.x + cell_x;
-                let screen_y = inner_area.y + cell_y;
+                let fg = if self.diverging { diverging_color(t_top) } else { inferno(t_top) };
+                let bg = if self.diverging { diverging_color(t_bot) } else { inferno(t_bot) };
 
-                if screen_x < area.right() && screen_y < area.bottom() {
-                    buf[(screen_x, screen_y)].set_char(ch).set_fg(color);
+                let sx = inner.x + cx as u16;
+                let sy = inner.y + cy as u16;
+                if sx < area.right() && sy < area.bottom() {
+                    buf[(sx, sy)]
+                        .set_char('▀')
+                        .set_fg(fg)
+                        .set_bg(bg);
                 }
             }
         }
     }
+}
+
+pub struct Stats {
+    pub min: f32,
+    pub max: f32,
+    pub mean: f32,
+    pub std: f32,
+}
+
+pub fn tensor_stats(t: &Tensor) -> Stats {
+    Stats {
+        min: t.min().double_value(&[]) as f32,
+        max: t.max().double_value(&[]) as f32,
+        mean: t.mean(tch::Kind::Float).double_value(&[]) as f32,
+        std: t.std(true).double_value(&[]) as f32,
+    }
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+}
+
+fn color_lerp(stops: &[(f32, u8, u8, u8)], t: f32) -> RC {
+    let t = t.clamp(0.0, 1.0);
+    if t <= stops[0].0 {
+        return RC::Rgb(stops[0].1, stops[0].2, stops[0].3);
+    }
+    for i in 1..stops.len() {
+        if t <= stops[i].0 {
+            let s = (t - stops[i - 1].0) / (stops[i].0 - stops[i - 1].0);
+            let (_, r0, g0, b0) = stops[i - 1];
+            let (_, r1, g1, b1) = stops[i];
+            return RC::Rgb(lerp_u8(r0, r1, s), lerp_u8(g0, g1, s), lerp_u8(b0, b1, s));
+        }
+    }
+    let last = stops.last().unwrap();
+    RC::Rgb(last.1, last.2, last.3)
+}
+
+fn inferno(t: f32) -> RC {
+    color_lerp(
+        &[
+            (0.00, 0, 0, 4),
+            (0.13, 31, 12, 72),
+            (0.25, 85, 15, 109),
+            (0.38, 136, 34, 106),
+            (0.50, 186, 54, 85),
+            (0.63, 227, 89, 51),
+            (0.75, 249, 140, 10),
+            (0.88, 249, 201, 50),
+            (1.00, 252, 255, 164),
+        ],
+        t,
+    )
+}
+
+fn diverging_color(t: f32) -> RC {
+    color_lerp(
+        &[
+            (0.00, 20, 60, 180),
+            (0.30, 40, 40, 100),
+            (0.50, 15, 15, 15),
+            (0.70, 100, 35, 35),
+            (1.00, 200, 30, 30),
+        ],
+        t,
+    )
 }
