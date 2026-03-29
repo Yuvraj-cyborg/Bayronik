@@ -80,9 +80,75 @@ class InferenceResponse(BaseModel):
     output_shape: list[int]
 
 
+CAMELS_DATA: dict = {}
+
+
+def _load_camels():
+    """Lazy-load CAMELS data as memory-mapped arrays."""
+    if CAMELS_DATA:
+        return
+    data_dir = Path(__file__).parent / "data"
+    for dt in ["LH", "CV"]:
+        dm = data_dir / f"Maps_Mcdm_IllustrisTNG_{dt}_z=0.00.npy"
+        mt = data_dir / f"Maps_Mtot_IllustrisTNG_{dt}_z=0.00.npy"
+        if dm.exists() and "Mcdm" not in CAMELS_DATA:
+            CAMELS_DATA["Mcdm"] = np.load(dm, mmap_mode="r")
+            CAMELS_DATA["dataset_type"] = dt
+        if mt.exists() and "Mtot" not in CAMELS_DATA:
+            CAMELS_DATA["Mtot"] = np.load(mt, mmap_mode="r")
+    for name in ["params_LH_IllustrisTNG.txt", "params_IllustrisTNG_LH.txt"]:
+        p = data_dir / name
+        if p.exists():
+            CAMELS_DATA["params"] = np.loadtxt(p)
+            break
+    print(f"CAMELS data loaded: {list(CAMELS_DATA.keys())}")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "model_loaded": MODEL is not None}
+
+
+@app.get("/dataset/info")
+async def dataset_info():
+    _load_camels()
+    if "Mcdm" not in CAMELS_DATA:
+        raise HTTPException(status_code=404, detail="No CAMELS data found")
+    dm = CAMELS_DATA["Mcdm"]
+    return {
+        "dataset_type": CAMELS_DATA.get("dataset_type", "unknown"),
+        "n_samples": int(dm.shape[0]),
+        "resolution": int(dm.shape[1]),
+    }
+
+
+@app.get("/sample/{idx}")
+async def get_sample(idx: int):
+    _load_camels()
+    dm = CAMELS_DATA.get("Mcdm")
+    mt = CAMELS_DATA.get("Mtot")
+    if dm is None:
+        raise HTTPException(status_code=404, detail="No CAMELS data")
+    if idx < 0 or idx >= dm.shape[0]:
+        raise HTTPException(status_code=400, detail=f"Index {idx} out of range [0, {dm.shape[0]})")
+
+    input_map = np.array(dm[idx], dtype=np.float32)
+    gt_map = np.array(mt[idx], dtype=np.float32) if mt is not None else np.zeros_like(input_map)
+
+    params_arr = CAMELS_DATA.get("params")
+    if params_arr is not None:
+        n_sims = len(params_arr)
+        maps_per_sim = max(1, dm.shape[0] // n_sims)
+        sim_idx = min(idx // maps_per_sim, n_sims - 1)
+        params = params_arr[sim_idx].tolist()
+    else:
+        params = [0.3, 0.8, 1.0, 1.0, 1.0, 1.0]
+
+    return {
+        "input_map": input_map.tolist(),
+        "ground_truth": gt_map.tolist(),
+        "params": params,
+    }
 
 
 @app.post("/infer", response_model=InferenceResponse)

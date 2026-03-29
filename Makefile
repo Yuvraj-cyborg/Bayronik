@@ -1,7 +1,7 @@
 # Bayronik Makefile
 # Build, train, and run the baryonic field emulator
 
-.PHONY: all setup demo server webapp infer train build build-nbody clean help
+.PHONY: all setup demo server infer train build build-nbody clean help
 
 # Paths
 VENV         := bayronik-model/.venv
@@ -24,33 +24,32 @@ all: help
 # One-command demo: installs deps, starts server + webapp
 #------------------------------------------------------------------------------
 
-demo: setup-demo
+demo: setup-server $(WEB_BIN)
 	@echo "Starting Bayronik demo..."
-	@echo "  Web app: http://localhost:8501"
+	@echo "  Server:   http://localhost:8000"
+	@echo "  Desktop:  launching bayronik-web"
 	@echo ""
 	@echo "Press Ctrl+C to stop."
-	cd bayronik-model && uv run --extra demo streamlit run webapp.py --server.headless true
+	cd bayronik-model && uv run --extra server uvicorn server:app --host 0.0.0.0 --port 8000 &
+	@sleep 2
+	./$(WEB_BIN)
 
-setup-demo:
+setup-server:
 	@if [ ! -d "$(VENV)" ]; then \
 		echo "Creating venv..."; \
-		cd bayronik-model && uv venv && uv sync --extra demo; \
+		cd bayronik-model && uv venv && uv sync --extra server; \
 	else \
 		echo "Syncing deps..."; \
-		cd bayronik-model && uv sync --extra demo; \
+		cd bayronik-model && uv sync --extra server; \
 	fi
 
 #------------------------------------------------------------------------------
 # Run individual services
 #------------------------------------------------------------------------------
 
-server: setup-demo
+server: setup-server
 	@echo "Starting inference server on http://localhost:8000"
-	cd bayronik-model && uv run --extra demo uvicorn server:app --host 0.0.0.0 --port 8000 --reload
-
-webapp: setup-demo
-	@echo "Starting Streamlit web app on http://localhost:8501"
-	cd bayronik-model && uv run --extra demo streamlit run webapp.py
+	cd bayronik-model && uv run --extra server uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
 #------------------------------------------------------------------------------
 # Setup
@@ -247,18 +246,17 @@ gcp-delete:
 deploy-info:
 	@echo "Deployment options:"
 	@echo ""
-	@echo "  1. Streamlit Cloud (free, easiest):"
-	@echo "     - Push to GitHub"
-	@echo "     - Go to share.streamlit.io"
-	@echo "     - Point to bayronik-model/webapp.py"
-	@echo "     - Set Python path to bayronik-model/"
+	@echo "  1. Vercel (static WASM frontend):"
+	@echo "     - Build WASM: make build-wasm"
+	@echo "     - Deploy bayronik-web/ as static site"
+	@echo "     - Point API_URL to your inference server"
 	@echo ""
-	@echo "  2. GCP VM:"
-	@echo "     - Create a small VM (e2-standard-4, no GPU needed for inference)"
-	@echo "     - Upload bayronik-model/ and model weights"
-	@echo "     - Run: make demo"
+	@echo "  2. Server (FastAPI inference backend):"
+	@echo "     - Deploy server.py on Railway, Fly.io, or Modal.com"
+	@echo "     - Model weights must be in bayronik-model/weights/"
 	@echo ""
-	@echo "  Model weights must be in bayronik-model/weights/"
+	@echo "  3. Desktop (local):"
+	@echo "     - make demo (starts server + desktop app)"
 
 #------------------------------------------------------------------------------
 # Clean
@@ -289,9 +287,10 @@ help:
 	@echo "Bayronik - Baryonic Field Emulator"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make demo        - Start server + webapp (one command)"
-	@echo "  make server      - Start FastAPI server only (localhost:8000)"
-	@echo "  make webapp      - Start Streamlit app only (localhost:8501)"
+	@echo "  make demo        - Start server + desktop app (one command)"
+	@echo "  make server      - Start FastAPI inference server (localhost:8000)"
+	@echo "  make run-web     - Run native desktop frontend"
+	@echo "  make serve-web   - Build WASM and serve (localhost:8080)"
 	@echo ""
 	@echo "Data:"
 	@echo "  make download-lh - Download LH dataset with params (~15GB)"
@@ -306,16 +305,10 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  make build       - Build all Rust binaries"
-	@echo "  make build-nbody - Build N-body simulator binary"
 	@echo "  make build-wasm  - Build WASM frontend"
 	@echo ""
-	@echo "GCP:"
-	@echo "  make gcp-create  - Create L4 GPU VM for training"
-	@echo "  make gcp-ssh     - SSH into training VM"
-	@echo "  make gcp-upload  - Upload model code to VM"
-	@echo "  make gcp-download-weights - Download trained weights from VM"
-	@echo "  make gcp-stop    - Stop VM (keeps data)"
-	@echo "  make gcp-delete  - Delete VM"
+	@echo "Deploy:"
+	@echo "  make deploy-info - Show deployment options"
 	@echo ""
 	@echo "Clean:"
 	@echo "  make clean       - Remove build artifacts"

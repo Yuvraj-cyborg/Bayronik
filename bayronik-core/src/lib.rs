@@ -9,6 +9,7 @@
 //! The output is a 2D surface density map suitable as input for the Bayronik
 //! baryonic field emulator.
 
+#[cfg(feature = "npy")]
 pub mod output;
 pub mod sim;
 
