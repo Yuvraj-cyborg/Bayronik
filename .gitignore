@@ -1,13 +1,27 @@
-*/.venv
-*/target
-/target
-*/wandb
-bayronik-model/scripts/__pycache__/
-.DS_Store
-*/__pycache__
+# Build artifacts
+target/
+*/target/
 Cargo.lock
 */Cargo.lock
-*/data
-*/weights
+client/pkg/
+
+# Python
+*/.venv
+*/__pycache__/
+*/.coverage
+.coverage
+
+# Data, weights, runs
+*/data/
+*/weights/
+*/wandb/
+*/reports/runs/
+model/reports/checkpoints/
+
+# Generated artifacts
+engine/custom_output.npy
+engine/nbody_map_*.npy
+
+# OS
+.DS_Store
 ._*
-bayronik-core/custom_output.npy
