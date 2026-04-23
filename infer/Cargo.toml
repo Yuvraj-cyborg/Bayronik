@@ -1,0 +1,18 @@
+[package]
+name = "infer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bayronik terminal inference UI (libtorch + ratatui)"
+
+[dependencies]
+anyhow.workspace = true
+engine = { path = "../engine" }
+crossterm = "0.29.0"
+npyz = "0.8.4"
+plotters = "0.3"
+plotters-backend = "0.3"
+rand = "0.9"
+ratatui = "0.29.0"
+tch = "0.22.0"

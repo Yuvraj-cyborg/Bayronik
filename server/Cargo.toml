@@ -1,0 +1,28 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bayronik HTTP inference server (axum + tch)"
+
+[dependencies]
+anyhow.workspace = true
+axum = { version = "0.8", features = ["multipart", "macros"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tch = "0.22"
+npyz = "0.8.4"
+memmap2 = "0.9"
+bytes = "1"
+registry = { path = "../registry" }
+
+[[bin]]
+name = "server"
+path = "src/main.rs"

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Bayronik - Baryonic Field Emulator</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1a2e;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        #loading h1 {
+            color: #4fc3f7;
+            margin-bottom: 20px;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid #333;
+            border-top: 3px solid #4fc3f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <h1>Bayronik</h1>
+        <p>Baryonic Field Emulator</p>
+        <div class="spinner"></div>
+        <p>Loading WebAssembly...</p>
+    </div>
+    
+    <canvas id="bayronik_canvas"></canvas>
+
+    <script type="module">
+        import init from './pkg/client.js';
+        
+        async function run() {
+            try {
+                await init();
+                document.getElementById('loading').style.display = 'none';
+            } catch (e) {
+                document.getElementById('loading').innerHTML = `
+                    <h1>Error</h1>
+                    <p>Failed to load WebAssembly</p>
+                    <pre style="color: #ff6b6b; text-align: left; background: #222; padding: 10px; border-radius: 4px;">${e}</pre>
+                `;
+            }
+        }
+        
+        run();
+    </script>
+</body>
+</html>

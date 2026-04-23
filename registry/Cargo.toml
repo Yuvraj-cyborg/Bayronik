@@ -1,0 +1,24 @@
+[package]
+name = "registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bayronik model registry types, builder CLI, and frozen-threshold regression suite"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+[lib]
+name = "registry"
+path = "src/lib.rs"
+
+[[bin]]
+name = "registry"
+path = "src/bin/registry.rs"
