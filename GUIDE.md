@@ -2,26 +2,20 @@
 
 ## Running the App
 
-### Desktop (recommended for local use)
+### Desktop
 
 ```bash
-# Start the inference server
-make server
-
-# In another terminal, run the desktop app
-cd bayronik-web && cargo run --release
+make server   # in one terminal
+make client   # in another
 ```
-
-Or use `make demo` to start both together.
 
 ### Browser (WASM)
 
 ```bash
-# Build WASM and serve
-make serve-web
+make wasm     # builds client/pkg + serves on :8080
 ```
 
-Open http://localhost:8080 in your browser. Requires the inference server running on port 8000.
+Open http://localhost:8080. The inference server on `:8000` must already be running.
 
 ## Tabs
 

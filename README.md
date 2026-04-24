@@ -15,16 +15,20 @@ Modern weak lensing surveys (Euclid, LSST, Roman) need sub-percent accuracy on t
 ## Architecture
 
 ```
-bayronik-core  (Rust)             bayronik-model (Python)
+engine      (Rust)         model     (Python — train only)
 Particle-Mesh N-body        -->   U-FNO + FiLM conditioning
 Zel'dovich ICs                    Trained on CAMELS LH (15k maps)
 CIC + FFT Poisson                 Multi-scale loss (pixel + spectral + mass)
 KDK integrator                    6 conditions: Ωm, σ8, ASN1, AAGN1, ASN2, AAGN2
 
-bayronik-web   (Rust/WASM)       server.py (Python)
-egui desktop + browser app        FastAPI inference backend
-Client-side N-body via WASM       Serves CAMELS data + model predictions
+client       (Rust/WASM)    server    (Rust + tch + axum)
+egui desktop + browser app        Pure-Rust HTTP inference backend
+Client-side N-body via WASM       Loads TorchScript .pt directly, no Python
 P(k), S(k), PDF analysis          CORS-enabled for WASM frontend
+
+registry  (Rust)         infer     (Rust)
+Model card / frozen thresholds    Local TUI inference (libtorch)
++ regression tests, no libtorch   tch-rs + ratatui
 ```
 
 The model is a U-Net enhanced Fourier Neural Operator (U-FNO) that combines:
@@ -36,49 +40,49 @@ The frontend runs as a native desktop app or compiles to WebAssembly for the bro
 
 ## Quick Start
 
-Prerequisites: Rust 1.92+, Python 3.10+, `uv` (recommended) or pip.
+Prerequisites: Rust 1.85+, Python 3.10+, `uv` (recommended) or pip.
 
 ```bash
-git clone https://github.com/yuvrajbiswal/bayronik.git
+git clone https://github.com/cosmexus/bayronik.git
 cd bayronik
 
-# Download training/test data (~15 GB for LH)
-make download-lh
-
-# Start the inference server + desktop app
-make demo
+make download-lh       # CAMELS LH maps + params (~15 GB)
+make server            # boot inference HTTP server on :8000
+make client            # native egui app   (or: make wasm for browser on :8080)
 ```
 
-The desktop app has four tabs:
-- **N-Body Simulator**: Generate DM maps client-side via WASM, run through emulator
-- **CAMELS Data**: Browse CAMELS samples with inference and ground truth comparison
-- **Parameter Sweep**: Vary one physics parameter, see how baryonic effects change
-- **About**: Project info and parameter definitions
+The client has four tabs:
+- **N-Body Simulator** — generate DM maps client-side via WASM, run through emulator
+- **CAMELS Data** — browse samples, compare inference to ground truth
+- **Parameter Sweep** — vary one parameter, observe baryonic effects
+- **About** — project info and parameter definitions
 
-### Other Commands
+### Other targets
 
 ```bash
-make help              # Show all targets
-make server            # FastAPI inference server only (localhost:8000)
-make run-web           # Native desktop frontend only
-make serve-web         # Build WASM and serve in browser (localhost:8080)
-make train             # Train conditional U-FNO on LH data
-make build-wasm        # Build WASM frontend
-make deploy-info       # Deployment options
+make help              # all targets
+make train             # train conditional U-FNO on LH
+make validate          # LH + CV scientific validation -> reports/
+make phase2            # validate -> registry rebuild -> regression tests
+make test              # engine + registry + fast model tests
 ```
 
 ## Project Layout
 
 ```
 bayronik/
-  bayronik-core/       Rust PM N-body: CIC, FFT Poisson, KDK, Zel'dovich ICs
-  bayronik-model/      Python: U-FNO, training, losses, dataset, FastAPI server
-  bayronik-infer/      Rust TUI: tch-rs inference with terminal heatmaps
-  bayronik-web/        Rust egui frontend (desktop + WASM), client-side analysis
-  Makefile             Build, train, demo orchestration
+  engine/       Rust PM N-body: CIC, FFT Poisson, KDK, Zel'dovich ICs
+  model/      Python: U-FNO architecture, training, losses, dataset, validation
+  server/     Rust: axum + tch HTTP inference backend (production path)
+  registry/   Rust: model registry types + builder + regression tests (no libtorch)
+  infer/      Rust TUI: tch-rs inference with terminal heatmaps
+  client/       Rust egui frontend (desktop + WASM), client-side analysis
+  Makefile      One Makefile, prod targets only
+  flake.nix     Nix dev shell
+  docs/         Model card, deployment, brand, research ideas
 ```
 
-### bayronik-model/src/bayronik_model/
+### model/src/bayronik_model/
 
 | File | Purpose |
 |------|---------|
@@ -89,7 +93,7 @@ bayronik/
 | `dataset.py` | CAMELSDataset with multi-projection param expansion |
 | `export.py` | TorchScript and ONNX export |
 
-### bayronik-web/src/
+### client/src/
 
 | File | Purpose |
 |------|---------|
@@ -140,7 +144,7 @@ The frontend computes:
 
 ## N-Body Simulator
 
-`bayronik-core` implements a Particle-Mesh N-body code in Rust:
+`engine` implements a Particle-Mesh N-body code in Rust:
 
 1. **Initial conditions**: Zel'dovich approximation from Gaussian random field
 2. **Mass assignment**: Cloud-in-Cell (CIC) interpolation
@@ -153,9 +157,12 @@ The N-body simulator compiles to WebAssembly and runs entirely in the browser �
 
 ## Deployment
 
-- **Frontend**: Static WASM site on Vercel/Netlify (build with `make build-wasm`)
-- **Backend**: FastAPI server on Railway, Fly.io, or Modal.com (GPU for fast inference)
-- **Desktop**: Native app via `cargo run --release -p bayronik-web`
+- **Frontend**: Static WASM site on Vercel/Netlify (build with `make wasm`)
+- **Backend**: `server` (Rust, tch + axum) on Modal.com / Fly.io / Railway / AWS / Azure
+- **Desktop**: Native app via `cargo run --release -p client`
+
+See `docs/DEPLOYMENT.md` for the full operational plan and `docs/MODEL_CARD.md` for
+the frozen scientific metrics enforced by `cargo test -p registry`.
 
 ## References
 
