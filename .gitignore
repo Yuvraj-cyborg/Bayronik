@@ -22,6 +22,9 @@ model/reports/checkpoints/
 engine/custom_output.npy
 engine/nbody_map_*.npy
 
+# Internal docs (not for public repo)
+/docs/
+
 # OS
 .DS_Store
 ._*
