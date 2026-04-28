@@ -367,10 +367,7 @@ impl BayronikApp {
                     match res.tag.as_str() {
                         "camels" => {
                             if let Some(inp) = &self.camels_input {
-                                let diff: Vec<f32> = res.output.iter()
-                                    .zip(inp.flat.iter())
-                                    .map(|(o, i)| o - i)
-                                    .collect();
+                                let diff = analysis::log_diff(&res.output, &inp.flat);
                                 self.camels_diff = Some(MapData::from_flat(diff));
                             }
                             self.camels_output = Some(output);
@@ -378,10 +375,7 @@ impl BayronikApp {
                         }
                         "nbody" => {
                             if let Some(inp) = &self.nbody_input {
-                                let diff: Vec<f32> = res.output.iter()
-                                    .zip(inp.flat.iter())
-                                    .map(|(o, i)| o - i)
-                                    .collect();
+                                let diff = analysis::log_diff(&res.output, &inp.flat);
                                 self.nbody_diff = Some(MapData::from_flat(diff));
                             }
                             self.nbody_output = Some(output);
@@ -460,12 +454,14 @@ impl BayronikApp {
             let sized = egui::load::SizedTexture::new(tex.id(), map_size);
             ui.image(sized);
             let label = if log_scale {
-                format!("log₁₀: [{:.1}, {:.1}]",
+                format!(
+                    "log10: [{:.1}, {:.1}]",
                     (data.min.max(0.0) + 1.0).log10(),
-                    (data.max.max(0.0) + 1.0).log10())
+                    (data.max.max(0.0) + 1.0).log10()
+                )
             } else if diverging {
                 let abs_max = data.min.abs().max(data.max.abs());
-                format!("[{:.2e}, {:.2e}]", -abs_max, abs_max)
+                format!("Δ log: [{:+.2}, {:+.2}]", -abs_max, abs_max)
             } else {
                 format!("[{:.2e}, {:.2e}]", data.min, data.max)
             };
@@ -523,7 +519,7 @@ impl BayronikApp {
         let can_infer = self.camels_input.is_some() && !self.inference_pending;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(can_infer, |ui| {
-                if ui.button(egui::RichText::new("⚡ Run Inference").strong().size(16.0)).clicked() {
+                if ui.button(egui::RichText::new("Run Inference").strong().size(16.0)).clicked() {
                     if let Some(inp) = &self.camels_input {
                         self.send_inference(&inp.flat.clone(), "camels", ctx.clone());
                     }
@@ -563,9 +559,9 @@ impl BayronikApp {
             ui.horizontal(|ui| {
                 self.show_map(ui, ctx, "c_gt", "Ground Truth: Mtot", &gt, &cmap, ls, false, map_size);
                 self.show_map(ui, ctx, "c_out2", "Prediction", &out, &cmap, ls, false, map_size);
-                let error: Vec<f32> = out.flat.iter().zip(gt.flat.iter()).map(|(o, g)| o - g).collect();
+                let error = analysis::log_diff(&out.flat, &gt.flat);
                 let error_data = MapData::from_flat(error);
-                self.show_map(ui, ctx, "c_err", "Error", &error_data, &Colormap::DarkDiverging, false, true, map_size);
+                self.show_map(ui, ctx, "c_err", "Pred − Truth (log)", &error_data, &Colormap::DarkDiverging, false, true, map_size);
             });
 
             // Metrics
@@ -613,11 +609,10 @@ impl BayronikApp {
         ui.horizontal(|ui| {
             let running = self.nbody_running || self.inference_pending;
             ui.add_enabled_ui(!running, |ui| {
-                if ui.button(egui::RichText::new("🚀 Run N-Body + Emulator").strong().size(16.0)).clicked() {
+                if ui.button(egui::RichText::new("Run N-Body + Emulator").strong().size(16.0)).clicked() {
                     self.nbody_running = true;
                     self.status = "Running N-body simulation...".into();
-                    // Run simulation synchronously (fast for 32³)
-                    let map = engine::run_simulation(
+                    let raw = engine::run_simulation(
                         self.nbody_seed,
                         self.nbody_grid_res,
                         self.nbody_box_size,
@@ -625,9 +620,10 @@ impl BayronikApp {
                         self.nbody_steps,
                         self.resolution,
                     );
-                    self.nbody_input = Some(MapData::from_flat(map.clone()));
+                    let calibrated = analysis::calibrate_to_camels(&raw);
+                    self.nbody_input = Some(MapData::from_flat(calibrated.clone()));
                     self.status = "N-body done, running emulator...".into();
-                    self.send_inference(&map, "nbody", ctx.clone());
+                    self.send_inference(&calibrated, "nbody", ctx.clone());
                 }
             });
             if running {
@@ -680,7 +676,7 @@ impl BayronikApp {
 
         let has_input = self.nbody_input.is_some() || self.camels_input.is_some();
         ui.add_enabled_ui(has_input && !self.sweep_running && !self.inference_pending, |ui| {
-            if ui.button(egui::RichText::new("▶ Run Sweep").strong().size(16.0)).clicked() {
+            if ui.button(egui::RichText::new("Run Sweep").strong().size(16.0)).clicked() {
                 let input_flat = self.nbody_input.as_ref()
                     .or(self.camels_input.as_ref())
                     .unwrap()
@@ -979,8 +975,12 @@ impl eframe::App for BayronikApp {
                 ui.separator();
                 ui.heading("Server");
                 ui.horizontal(|ui| {
-                    let dot = if self.server_connected { "🟢" } else { "🔴" };
-                    ui.label(dot);
+                    let (label, color) = if self.server_connected {
+                        ("online", egui::Color32::from_rgb(80, 200, 120))
+                    } else {
+                        ("offline", egui::Color32::from_rgb(220, 80, 80))
+                    };
+                    ui.colored_label(color, label);
                     ui.code(API_URL);
                 });
                 if ui.button("Check Connection").clicked() {

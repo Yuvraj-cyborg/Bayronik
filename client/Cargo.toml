@@ -48,3 +48,9 @@ env_logger = "0.11"
 inherits = "release"
 opt-level = "s"
 strip = true
+
+# wasm-pack's bundled wasm-opt rejects bulk-memory ops emitted by recent
+# rustc/llvm. We rely on `opt-level = "s"` + `strip = true` for size; skip
+# the post-link wasm-opt pass.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

@@ -126,6 +126,60 @@ pub fn safe_log1p_field(field: &[f32]) -> Vec<f32> {
     field.iter().map(|&v| (v.max(0.0) + 1.0).ln()).collect()
 }
 
+/// Mean of log1p(Mcdm) over CAMELS IllustrisTNG LH z=0 column-density maps.
+/// Measured from `model/data/Maps_Mcdm_IllustrisTNG_LH_z=0.00.npy` (10 random
+/// samples). Inputs to the U-FNO emulator are expected to live in this
+/// distribution because the training pipeline applies `log1p` before the
+/// forward pass.
+pub const CAMELS_LOG1P_MEAN: f32 = 25.5;
+pub const CAMELS_LOG1P_STD: f32 = 1.04;
+
+/// Rescale a field so its `log1p` distribution matches the CAMELS Mcdm
+/// training set. This makes out-of-distribution inputs (e.g., a particle-mesh
+/// projection in raw particle counts) consumable by a model trained on
+/// `log1p(column_density)` in `Msun/h/Mpc^2`.
+///
+/// The transform is affine in log space:
+///     log1p(out) = (log1p(field) - μ_field) / σ_field * σ_camels + μ_camels
+/// so spatial structure (clustering, Fourier modes) is preserved exactly;
+/// only the absolute scale and contrast are normalized. Fields already in the
+/// CAMELS distribution are left effectively unchanged.
+pub fn calibrate_to_camels(field: &[f32]) -> Vec<f32> {
+    let n = field.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let log_field: Vec<f32> = field.iter().map(|&v| (v.max(0.0) + 1.0).ln()).collect();
+
+    let inv_n = 1.0 / n as f32;
+    let mean: f32 = log_field.iter().sum::<f32>() * inv_n;
+    let var: f32 = log_field.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() * inv_n;
+    let std = var.sqrt().max(1e-6);
+
+    log_field
+        .iter()
+        .map(|&v| {
+            let z = (v - mean) / std;
+            let rescaled = z * CAMELS_LOG1P_STD + CAMELS_LOG1P_MEAN;
+            (rescaled.exp() - 1.0).max(0.0)
+        })
+        .collect()
+}
+
+/// Pixel-wise log-space difference: `log1p(out) - log1p(inp)`.
+///
+/// In CAMELS-scale units this is approximately `ln(M_tot / M_dm)`, the
+/// standard way to visualize the baryonic effect. Positive values mark
+/// pixels where baryons accumulated; negative values mark pixels where
+/// feedback evacuated mass.
+pub fn log_diff(out: &[f32], inp: &[f32]) -> Vec<f32> {
+    out.iter()
+        .zip(inp.iter())
+        .map(|(&o, &i)| (o.max(0.0) + 1.0).ln() - (i.max(0.0) + 1.0).ln())
+        .collect()
+}
+
 // ---- Internal helpers ----
 
 fn interp(x: f64, xs: &[f64], ys: &[f64]) -> f64 {
