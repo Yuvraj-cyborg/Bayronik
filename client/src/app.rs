@@ -752,34 +752,65 @@ impl BayronikApp {
                 }
             });
 
-            // Power spectrum overlay
             if let Some(inp) = &self.sweep_input {
                 let log_inp = analysis::safe_log1p_field(&inp.flat);
                 let (k_inp, pk_inp) = analysis::power_spectrum(&log_inp, self.resolution);
 
-                let mut lines: Vec<Line> = vec![
-                    line("Input DM", k_inp.iter().zip(pk_inp.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()),
+                let mut ps_lines: Vec<Line> = vec![
+                    line(
+                        "Input DM",
+                        k_inp.iter().zip(pk_inp.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect(),
+                    )
+                    .width(1.5),
                 ];
+
+                let mut sk_lines: Vec<Line> = Vec::with_capacity(sorted.len());
 
                 for (val, data) in &sorted {
                     let log_out = analysis::safe_log1p_field(&data.flat);
                     let (k_o, pk_o) = analysis::power_spectrum(&log_out, self.resolution);
-                    lines.push(
-                        line(&format!("{}={:.2}", self.sweep_param_name, val),
-                             k_o.iter().zip(pk_o.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()),
+
+                    ps_lines.push(
+                        line(
+                            &format!("{}={:.2}", self.sweep_param_name, val),
+                            k_o.iter().zip(pk_o.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect(),
+                        )
+                        .width(1.5),
+                    );
+
+                    let (k_s, s_k) = analysis::baryon_suppression(&k_inp, &pk_inp, &k_o, &pk_o);
+                    sk_lines.push(
+                        line(
+                            &format!("{}={:.2}", self.sweep_param_name, val),
+                            k_s.iter().zip(s_k.iter()).map(|(&k, &s)| [k.ln(), s]).collect(),
+                        )
+                        .width(2.0),
                     );
                 }
 
                 ui.separator();
-                ui.strong("Power Spectrum Comparison (log-log)");
-                Plot::new("sweep_ps")
-                    .height(250.0)
-                    .legend(egui_plot::Legend::default())
-                    .show(ui, |plot_ui| {
-                        for line in lines {
-                            plot_ui.line(line);
-                        }
-                    });
+                ui.columns(2, |cols| {
+                    cols[0].strong("Power Spectrum (log-log)");
+                    Plot::new("sweep_ps")
+                        .height(260.0)
+                        .legend(egui_plot::Legend::default())
+                        .show(&mut cols[0], |plot_ui| {
+                            for ln in ps_lines {
+                                plot_ui.line(ln);
+                            }
+                        });
+
+                    cols[1].strong("Baryon Suppression  S(k) = P_pred / P_DM");
+                    Plot::new("sweep_sk")
+                        .height(260.0)
+                        .legend(egui_plot::Legend::default())
+                        .show(&mut cols[1], |plot_ui| {
+                            plot_ui.hline(HLine::new("S = 1", 1.0));
+                            for ln in sk_lines {
+                                plot_ui.line(ln);
+                            }
+                        });
+                });
             }
         }
     }
