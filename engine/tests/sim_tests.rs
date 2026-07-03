@@ -553,6 +553,32 @@ fn run_simulation_deterministic() {
 }
 
 #[test]
+fn incremental_stepping_matches_run_simulation() {
+    // The frame-by-frame Simulation API must produce bit-identical output
+    // to the batch entry point.
+    let cfg = quick_config(42);
+    let batch = engine::run_simulation(&cfg);
+
+    let mut sim = engine::Simulation::new(cfg);
+    assert_eq!(sim.n_steps(), cfg.n_steps);
+    assert!(!sim.is_done());
+
+    let mut steps_taken = 0;
+    loop {
+        let more = sim.step();
+        steps_taken += 1;
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(steps_taken, cfg.n_steps);
+    assert!(sim.is_done());
+    assert!(!sim.step(), "step() after completion must be a no-op");
+
+    assert_eq!(sim.projected_map(), batch);
+}
+
+#[test]
 fn run_simulation_different_seeds_differ() {
     let m1 = engine::run_simulation(&quick_config(1));
     let m2 = engine::run_simulation(&quick_config(2));
