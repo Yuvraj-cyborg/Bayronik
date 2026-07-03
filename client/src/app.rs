@@ -55,6 +55,14 @@ struct SampleResponse {
     params: Vec<f32>,
 }
 
+/// Training-set log1p moments served by `/stats`, used to calibrate
+/// N-body inputs into the model's training distribution.
+#[derive(Deserialize, Clone, Copy)]
+struct StatsResponse {
+    input_log1p_mean: f32,
+    input_log1p_std: f32,
+}
+
 // ---- App state ----
 
 #[derive(Clone, Copy, PartialEq)]
@@ -113,6 +121,10 @@ pub struct BayronikApp {
     pending_sample: Arc<Mutex<Option<Result<SampleResponse, String>>>>,
     sample_loading: bool,
     pending_info: Arc<Mutex<Option<Result<DatasetInfo, String>>>>,
+
+    // Training-set calibration stats (from /stats; None until fetched)
+    train_stats: Option<StatsResponse>,
+    pending_stats: Arc<Mutex<Option<Result<StatsResponse, String>>>>,
 
     // N-Body tab
     nbody_grid_res: usize,
@@ -173,9 +185,12 @@ impl Default for BayronikApp {
             sample_loading: false,
             pending_info: Arc::new(Mutex::new(None)),
 
+            train_stats: None,
+            pending_stats: Arc::new(Mutex::new(None)),
+
             nbody_grid_res: 32,
-            nbody_box_size: 100.0,
-            nbody_steps: 10,
+            nbody_box_size: 25.0,
+            nbody_steps: 32,
             nbody_seed: 42,
             nbody_input: None,
             nbody_output: None,
@@ -198,6 +213,7 @@ impl BayronikApp {
         let mut app = Self::default();
         app.check_server_health(cc.egui_ctx.clone());
         app.fetch_dataset_info(cc.egui_ctx.clone());
+        app.fetch_train_stats(cc.egui_ctx.clone());
         app
     }
 
@@ -245,6 +261,24 @@ impl BayronikApp {
             };
             if let Ok(mut guard) = pending.lock() {
                 *guard = Some(info);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn fetch_train_stats(&self, ctx: egui::Context) {
+        let url = format!("{}/stats", API_URL);
+        let pending = self.pending_stats.clone();
+        ehttp::fetch(ehttp::Request::get(&url), move |result| {
+            let stats = match result {
+                Ok(resp) if resp.status == 200 => {
+                    serde_json::from_slice::<StatsResponse>(&resp.bytes).map_err(|e| e.to_string())
+                }
+                Ok(resp) => Err(format!("HTTP {}", resp.status)),
+                Err(e) => Err(e),
+            };
+            if let Ok(mut guard) = pending.lock() {
+                *guard = Some(stats);
             }
             ctx.request_repaint();
         });
@@ -325,6 +359,15 @@ impl BayronikApp {
                         self.camels_info = Some(info);
                     }
                     Err(_) => {}
+                }
+            }
+        }
+
+        // Training stats
+        if let Ok(mut guard) = self.pending_stats.lock() {
+            if let Some(result) = guard.take() {
+                if let Ok(stats) = result {
+                    self.train_stats = Some(stats);
                 }
             }
         }
@@ -583,8 +626,8 @@ impl BayronikApp {
     }
 
     fn tab_nbody(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.label("Generate a dark matter density map using the Particle-Mesh N-body simulator, then run the emulator.");
-        ui.small("The N-body simulation runs entirely in your browser via WebAssembly.");
+        ui.label("Generate a dark matter surface density map with the built-in LCDM particle-mesh N-body code, then run the emulator.");
+        ui.small("Zel'dovich ICs from an Eisenstein-Hu P(k) at z=49, KDK leapfrog to z=0. Runs entirely in your browser via WebAssembly.");
 
         ui.separator();
 
@@ -599,12 +642,16 @@ impl BayronikApp {
                     ui.selectable_value(&mut self.nbody_grid_res, 64, "64³ (slow)");
                 });
             ui.label("Box:");
-            ui.add(egui::DragValue::new(&mut self.nbody_box_size).range(50.0..=500.0).suffix(" Mpc/h"));
+            ui.add(egui::DragValue::new(&mut self.nbody_box_size).range(25.0..=100.0).suffix(" Mpc/h"));
             ui.label("Steps:");
-            ui.add(egui::DragValue::new(&mut self.nbody_steps).range(3..=50));
+            ui.add(egui::DragValue::new(&mut self.nbody_steps).range(8..=64));
             ui.label("Seed:");
             ui.add(egui::DragValue::new(&mut self.nbody_seed).range(0..=99999));
         });
+        ui.small(format!(
+            "Cosmology from the sliders: Ωm={:.2}, σ₈={:.2}. CAMELS box is 25 Mpc/h.",
+            self.omega_m, self.sigma_8
+        ));
 
         ui.horizontal(|ui| {
             let running = self.nbody_running || self.inference_pending;
@@ -612,15 +659,27 @@ impl BayronikApp {
                 if ui.button(egui::RichText::new("Run N-Body + Emulator").strong().size(16.0)).clicked() {
                     self.nbody_running = true;
                     self.status = "Running N-body simulation...".into();
-                    let raw = engine::run_simulation(
-                        self.nbody_seed,
-                        self.nbody_grid_res,
-                        self.nbody_box_size,
-                        0.01,
-                        self.nbody_steps,
-                        self.resolution,
-                    );
-                    let calibrated = analysis::calibrate_to_camels(&raw);
+                    let config = engine::SimConfig {
+                        seed: self.nbody_seed,
+                        grid_res: self.nbody_grid_res,
+                        box_size: self.nbody_box_size,
+                        n_steps: self.nbody_steps,
+                        projection_res: self.resolution,
+                        cosmo: engine::Cosmology {
+                            omega_m: self.omega_m as f64,
+                            sigma8: self.sigma_8 as f64,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let raw = engine::run_simulation(&config);
+                    // Affine log-space calibration to the training stats
+                    // corrects residual PM-resolution contrast mismatch.
+                    let (mean, std) = self
+                        .train_stats
+                        .map(|s| (s.input_log1p_mean, s.input_log1p_std))
+                        .unwrap_or((analysis::CAMELS_LOG1P_MEAN, analysis::CAMELS_LOG1P_STD));
+                    let calibrated = analysis::calibrate_to_stats(&raw, mean, std);
                     self.nbody_input = Some(MapData::from_flat(calibrated.clone()));
                     self.status = "N-body done, running emulator...".into();
                     self.send_inference(&calibrated, "nbody", ctx.clone());
@@ -827,7 +886,7 @@ impl BayronikApp {
         ui.strong("Components");
         egui::Grid::new("about_grid").striped(true).show(ui, |ui| {
             ui.label("engine");
-            ui.label("Particle-mesh N-body simulator (runs in-browser via WASM)");
+            ui.label("Cosmological PM N-body code: LCDM, EH98 P(k), Zel'dovich ICs (runs in-browser via WASM)");
             ui.end_row();
             ui.label("model");
             ui.label("Python U-FNO training and scientific validation pipeline");
@@ -1014,9 +1073,21 @@ impl eframe::App for BayronikApp {
                     ui.colored_label(color, label);
                     ui.code(API_URL);
                 });
+                match self.train_stats {
+                    Some(s) => ui.small(format!(
+                        "calibration: μ={:.2} σ={:.2} (server)",
+                        s.input_log1p_mean, s.input_log1p_std
+                    )),
+                    None => ui.small(format!(
+                        "calibration: μ={:.2} σ={:.2} (fallback)",
+                        analysis::CAMELS_LOG1P_MEAN,
+                        analysis::CAMELS_LOG1P_STD
+                    )),
+                };
                 if ui.button("Check Connection").clicked() {
                     self.check_server_health(ctx.clone());
                     self.fetch_dataset_info(ctx.clone());
+                    self.fetch_train_stats(ctx.clone());
                 }
             });
 

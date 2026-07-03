@@ -144,16 +144,16 @@ The frontend computes:
 
 ## N-Body Simulator
 
-`engine` implements a Particle-Mesh N-body code in Rust:
+`engine` implements a cosmological Particle-Mesh N-body code in Rust (flat LCDM, h-units: Mpc/h, Msun/h, H0 = 1):
 
-1. **Initial conditions**: Zel'dovich approximation from Gaussian random field
-2. **Mass assignment**: Cloud-in-Cell (CIC) interpolation
-3. **Gravity**: FFT Poisson solver in k-space
-4. **Forces**: Finite differences on potential
-5. **Integration**: Symplectic Kick-Drift-Kick with periodic boundaries
-6. **Projection**: 3D to 2D surface density via CIC
+1. **Cosmology**: E(a), exact linear growth D(a) and f(a), Eisenstein-Hu (1998) linear power spectrum normalized to sigma8
+2. **Initial conditions**: Gaussian random field with the linear P(k) at z=49, Zel'dovich displacements and growing-mode momenta p = a²Ef·psi
+3. **Mass assignment**: Cloud-in-Cell (CIC), particle mass = Ωm ρ_crit V / N
+4. **Gravity**: FFT Poisson solver with the physical prefactor (3/2) Ωm/a
+5. **Integration**: Symplectic KDK leapfrog in scale factor with exact kick (∫da/aE) and drift (∫da/a³E) factors
+6. **Projection**: 2D surface density in (Msun/h)/(Mpc/h)², CAMELS map convention, with configurable slab depth
 
-The N-body simulator compiles to WebAssembly and runs entirely in the browser — no server round-trip needed for dark matter map generation.
+The simulator compiles to WebAssembly and runs entirely in the browser — no server round-trip needed for dark matter map generation. Because the PM mesh resolves fewer nonlinear scales than the 256³-particle CAMELS runs, the client applies an affine log-space calibration using training-set statistics served by the backend (`GET /stats`).
 
 ## Deployment
 

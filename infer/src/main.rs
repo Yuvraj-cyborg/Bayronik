@@ -110,8 +110,8 @@ impl App {
             a_sn2: 1.0,
             a_agn2: 1.0,
             nbody_grid: 64,
-            nbody_box: 100.0,
-            nbody_steps: 80,
+            nbody_box: 25.0,
+            nbody_steps: 32,
             nbody_seed: 42,
             is_nbody: false,
             status: String::new(),
@@ -155,14 +155,20 @@ impl App {
 
     fn run_nbody(&mut self) -> Result<()> {
         self.status = "Running N-body...".into();
-        let nbody_map = engine::run_simulation(
-            self.nbody_seed,
-            self.nbody_grid,
-            self.nbody_box,
-            0.005,
-            self.nbody_steps,
-            256,
-        );
+        let config = engine::SimConfig {
+            seed: self.nbody_seed,
+            grid_res: self.nbody_grid,
+            box_size: self.nbody_box,
+            n_steps: self.nbody_steps,
+            projection_res: 256,
+            cosmo: engine::Cosmology {
+                omega_m: self.omega_m as f64,
+                sigma8: self.sigma_8 as f64,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let nbody_map = engine::run_simulation(&config);
 
         let camels_ref = &self.all_input_maps[..256 * 256];
         let camels_log: Vec<f32> = camels_ref.iter().map(|&x| (x + 1.0).ln()).collect();

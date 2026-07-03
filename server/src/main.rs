@@ -50,6 +50,7 @@ struct AppState {
     registry: Arc<ModelRegistry>,
     started_at: Instant,
     dataset: Option<Arc<DatasetBundle>>,
+    train_stats: Arc<TrainStats>,
 }
 
 struct DatasetBundle {
@@ -113,6 +114,86 @@ struct DatasetInfo<'a> {
     has_ground_truth: bool,
 }
 
+/// log1p statistics of the training maps, served so clients can calibrate
+/// out-of-distribution inputs (e.g. N-body projections) into the
+/// distribution the model was trained on instead of hardcoding constants.
+#[derive(Serialize, Clone, Copy)]
+struct TrainStats {
+    input_log1p_mean: f32,
+    input_log1p_std: f32,
+    target_log1p_mean: f32,
+    target_log1p_std: f32,
+    n_maps_sampled: usize,
+    source: &'static str,
+}
+
+impl TrainStats {
+    /// Values measured offline from CAMELS IllustrisTNG LH z=0 Mcdm/Mtot
+    /// maps; used when no dataset is mounted.
+    fn fallback() -> Self {
+        Self {
+            input_log1p_mean: 25.5,
+            input_log1p_std: 1.04,
+            target_log1p_mean: 25.5,
+            target_log1p_std: 1.04,
+            n_maps_sampled: 0,
+            source: "fallback",
+        }
+    }
+}
+
+fn log1p_moments(ds: &MapsDataset, sample_count: usize) -> Option<(f32, f32, usize)> {
+    let n = ds.n_samples;
+    if n == 0 {
+        return None;
+    }
+    let count = sample_count.min(n);
+    let step = (n / count).max(1);
+
+    let mut sum = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    let mut n_vals = 0usize;
+    let mut n_maps = 0usize;
+
+    for idx in (0..n).step_by(step).take(count) {
+        let Ok(map) = ds.get(idx) else { continue };
+        for &v in &map {
+            let l = (v.max(0.0) as f64 + 1.0).ln();
+            sum += l;
+            sum_sq += l * l;
+        }
+        n_vals += map.len();
+        n_maps += 1;
+    }
+    if n_vals == 0 {
+        return None;
+    }
+    let mean = sum / n_vals as f64;
+    let var = (sum_sq / n_vals as f64 - mean * mean).max(0.0);
+    Some((mean as f32, var.sqrt() as f32, n_maps))
+}
+
+fn compute_train_stats(bundle: &DatasetBundle) -> TrainStats {
+    let fallback = TrainStats::fallback();
+    let Some((in_mean, in_std, n_maps)) = log1p_moments(&bundle.dm, 64) else {
+        return fallback;
+    };
+    let (t_mean, t_std) = bundle
+        .mtot
+        .as_ref()
+        .and_then(|m| log1p_moments(m, 64))
+        .map(|(m, s, _)| (m, s))
+        .unwrap_or((in_mean, in_std));
+    TrainStats {
+        input_log1p_mean: in_mean,
+        input_log1p_std: in_std,
+        target_log1p_mean: t_mean,
+        target_log1p_std: t_std,
+        n_maps_sampled: n_maps,
+        source: bundle.name,
+    }
+}
+
 #[derive(Serialize)]
 struct SampleResponse {
     input_map: Vec<Vec<f32>>,
@@ -147,11 +228,24 @@ async fn main() -> Result<()> {
 
     let dataset = build_dataset_bundle(&args.data_dir, &args.params_path).await?;
 
+    let train_stats = match dataset.as_ref() {
+        Some(bundle) => compute_train_stats(bundle),
+        None => TrainStats::fallback(),
+    };
+    tracing::info!(
+        source = train_stats.source,
+        input_mean = train_stats.input_log1p_mean,
+        input_std = train_stats.input_log1p_std,
+        maps = train_stats.n_maps_sampled,
+        "training log1p stats"
+    );
+
     let state = AppState {
         model,
         registry: Arc::new(registry),
         started_at: Instant::now(),
         dataset: dataset.map(Arc::new),
+        train_stats: Arc::new(train_stats),
     };
 
     let cors = CorsLayer::new()
@@ -163,6 +257,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health))
         .route("/version", get(version))
         .route("/metrics", get(metrics))
+        .route("/stats", get(stats))
         .route("/dataset/info", get(dataset_info))
         .route("/sample/{idx}", get(sample))
         .route("/infer", post(infer))
@@ -296,6 +391,10 @@ async fn metrics(State(state): State<AppState>) -> Json<serde_json::Value> {
         serde_json::to_value(&state.registry.frozen_metrics)
             .unwrap_or(serde_json::Value::Null),
     )
+}
+
+async fn stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::to_value(*state.train_stats).unwrap_or(serde_json::Value::Null))
 }
 
 async fn dataset_info(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
