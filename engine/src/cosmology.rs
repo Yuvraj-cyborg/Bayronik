@@ -78,6 +78,10 @@ impl Cosmology {
     ///
     /// D(a) is proportional to E(a) * int_0^a da' / (a' E(a'))^3
     /// (Heath 1977 growing-mode solution for LCDM).
+    ///
+    /// Cold-path convenience: the normalization integral is recomputed per
+    /// call. Callers evaluate this once per simulation (IC generation);
+    /// `Cosmology` is an immutable value type, so no cache is kept.
     pub fn growth_d(&self, a: f64) -> f64 {
         let unnorm = |x: f64| self.e(x) * self.growth_integral(x);
         unnorm(a) / unnorm(1.0)

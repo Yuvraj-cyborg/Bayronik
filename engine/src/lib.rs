@@ -63,59 +63,130 @@ impl Default for SimConfig {
     }
 }
 
+/// An in-progress N-body run that can be advanced one KDK step at a time.
+///
+/// Interactive frontends (the WASM client in particular) must not block the
+/// UI thread for a whole simulation; they construct a `Simulation` and call
+/// [`Simulation::step`] once per frame, keeping the UI responsive and giving
+/// live progress. Batch callers use [`run_simulation`], which drives the same
+/// code to completion.
+pub struct Simulation {
+    config: SimConfig,
+    particles: ParticleSet,
+    grid: Grid,
+    solver: FftSolver,
+    a_init: f64,
+    ln_ratio: f64,
+    current: usize,
+}
+
+impl Simulation {
+    /// Generate ICs at z_init and evaluate the initial forces.
+    pub fn new(config: SimConfig) -> Self {
+        let a_init = 1.0 / (1.0 + config.z_init);
+
+        let mut particles = ParticleSet::new();
+        particles.initialize_zeldovich(
+            config.grid_res,
+            config.box_size,
+            config.seed,
+            &config.cosmo,
+            a_init,
+        );
+
+        let mut grid = Grid::new(config.grid_res, config.box_size);
+        let mut solver = FftSolver::new(config.grid_res);
+
+        // KDK leapfrog: one force evaluation per step (force at the end of a
+        // step is reused as the force at the start of the next).
+        compute_forces(&mut particles, &mut grid, &mut solver, &config.cosmo, a_init);
+
+        // Log-spaced scale factor steps from a_init to 1.
+        let n_steps = config.n_steps.max(1);
+        let ln_ratio = (1.0 / a_init).ln() / n_steps as f64;
+
+        Self {
+            config,
+            particles,
+            grid,
+            solver,
+            a_init,
+            ln_ratio,
+            current: 0,
+        }
+    }
+
+    pub fn n_steps(&self) -> usize {
+        self.config.n_steps.max(1)
+    }
+
+    pub fn current_step(&self) -> usize {
+        self.current
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.current >= self.n_steps()
+    }
+
+    fn a_at(&self, i: usize) -> f64 {
+        self.a_init * (self.ln_ratio * i as f64).exp()
+    }
+
+    /// Advance one KDK step. Returns `true` while more steps remain.
+    pub fn step(&mut self) -> bool {
+        if self.is_done() {
+            return false;
+        }
+        let cosmo = &self.config.cosmo;
+        let a0 = self.a_at(self.current);
+        let a1 = self.a_at(self.current + 1);
+        let a_half = (a0 * a1).sqrt();
+
+        self.particles.kick(cosmo.kick_factor(a0, a_half) as f32);
+        self.particles.drift(cosmo.drift_factor(a0, a1) as f32);
+        compute_forces(
+            &mut self.particles,
+            &mut self.grid,
+            &mut self.solver,
+            cosmo,
+            a1,
+        );
+        self.particles.kick(cosmo.kick_factor(a_half, a1) as f32);
+
+        self.current += 1;
+        !self.is_done()
+    }
+
+    /// Project the current particle distribution to the output CDM surface
+    /// density map, `projection_res^2` values in (Msun/h)/(Mpc/h)^2.
+    pub fn projected_map(&self) -> Vec<f32> {
+        let config = &self.config;
+        // Project total matter, then scale to the CDM component to match the
+        // CAMELS Mcdm map convention.
+        let internal_res = config.projection_res.min(2 * config.grid_res);
+        let sigma_total = self
+            .particles
+            .project_to_2d(internal_res, config.slab_fraction);
+
+        let cdm_fraction = config.cosmo.cdm_fraction() as f32;
+        let mut map = if internal_res < config.projection_res {
+            upsample_bilinear(&sigma_total, internal_res, config.projection_res)
+        } else {
+            sigma_total
+        };
+        for v in map.iter_mut() {
+            *v *= cdm_fraction;
+        }
+        map
+    }
+}
+
 /// Run a complete N-body simulation to a = 1 and return the projected CDM
 /// surface density map, `projection_res^2` values in (Msun/h)/(Mpc/h)^2.
 pub fn run_simulation(config: &SimConfig) -> Vec<f32> {
-    let cosmo = &config.cosmo;
-    let a_init = 1.0 / (1.0 + config.z_init);
-
-    let mut particles = ParticleSet::new();
-    particles.initialize_zeldovich(
-        config.grid_res,
-        config.box_size,
-        config.seed,
-        cosmo,
-        a_init,
-    );
-
-    let mut grid = Grid::new(config.grid_res, config.box_size);
-    let mut solver = FftSolver::new(config.grid_res);
-
-    // Log-spaced scale factor steps from a_init to 1.
-    let n_steps = config.n_steps.max(1);
-    let ln_ratio = (1.0 / a_init).ln() / n_steps as f64;
-    let a_at = |i: usize| a_init * (ln_ratio * i as f64).exp();
-
-    // KDK leapfrog: one force evaluation per step (force at the end of a
-    // step is reused as the force at the start of the next).
-    compute_forces(&mut particles, &mut grid, &mut solver, cosmo, a_init);
-
-    for i in 0..n_steps {
-        let a0 = a_at(i);
-        let a1 = a_at(i + 1);
-        let a_half = (a0 * a1).sqrt();
-
-        particles.kick(cosmo.kick_factor(a0, a_half) as f32);
-        particles.drift(cosmo.drift_factor(a0, a1) as f32);
-        compute_forces(&mut particles, &mut grid, &mut solver, cosmo, a1);
-        particles.kick(cosmo.kick_factor(a_half, a1) as f32);
-    }
-
-    // Project total matter, then scale to the CDM component to match the
-    // CAMELS Mcdm map convention.
-    let internal_res = config.projection_res.min(2 * config.grid_res);
-    let sigma_total = particles.project_to_2d(internal_res, config.slab_fraction);
-
-    let cdm_fraction = cosmo.cdm_fraction() as f32;
-    let mut map = if internal_res < config.projection_res {
-        upsample_bilinear(&sigma_total, internal_res, config.projection_res)
-    } else {
-        sigma_total
-    };
-    for v in map.iter_mut() {
-        *v *= cdm_fraction;
-    }
-    map
+    let mut sim = Simulation::new(*config);
+    while sim.step() {}
+    sim.projected_map()
 }
 
 /// One PM force evaluation: CIC deposit, Poisson solve with the physical

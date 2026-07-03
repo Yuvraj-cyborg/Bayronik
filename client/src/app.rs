@@ -10,7 +10,12 @@ fn line(name: &str, points: Vec<[f64; 2]>) -> Line<'static> {
 use crate::analysis;
 use crate::visualization::{array_to_colorimage, array_to_colorimage_diverging, compute_statistics, Colormap};
 
-const API_URL: &str = "http://localhost:8000";
+/// Inference backend. Override at build time for deployments:
+/// `BAYRONIK_API_URL=https://api.example.com wasm-pack build ...`
+const API_URL: &str = match option_env!("BAYRONIK_API_URL") {
+    Some(url) => url,
+    None => "http://localhost:8000",
+};
 
 // ---- API types ----
 
@@ -135,6 +140,9 @@ pub struct BayronikApp {
     nbody_output: Option<MapData>,
     nbody_diff: Option<MapData>,
     nbody_running: bool,
+    // In-flight simulation, advanced one KDK step per frame so the
+    // single-threaded WASM main loop never blocks.
+    nbody_sim: Option<engine::Simulation>,
 
     // Sweep tab
     sweep_param_name: String,
@@ -196,6 +204,7 @@ impl Default for BayronikApp {
             nbody_output: None,
             nbody_diff: None,
             nbody_running: false,
+            nbody_sim: None,
 
             sweep_param_name: "a_sn1".into(),
             sweep_steps: 3,
@@ -345,6 +354,40 @@ impl BayronikApp {
             }
             ctx.request_repaint();
         });
+    }
+
+    // ---- N-body frame-sliced execution ----
+
+    /// Advance the in-flight N-body run by one KDK step per frame. Keeps the
+    /// single-threaded WASM event loop responsive and lets the status line
+    /// show live progress. On completion: project, calibrate to the training
+    /// stats, and hand off to the emulator.
+    fn advance_nbody_sim(&mut self, ctx: &egui::Context) {
+        let Some(sim) = self.nbody_sim.as_mut() else {
+            return;
+        };
+
+        let more = sim.step();
+        self.status = format!("N-body: step {}/{}", sim.current_step(), sim.n_steps());
+
+        if more {
+            ctx.request_repaint();
+            return;
+        }
+
+        let sim = self.nbody_sim.take().unwrap();
+        let raw = sim.projected_map();
+        // Affine log-space calibration to the training stats corrects
+        // residual PM-resolution contrast mismatch.
+        let (mean, std) = self
+            .train_stats
+            .map(|s| (s.input_log1p_mean, s.input_log1p_std))
+            .unwrap_or((analysis::CAMELS_LOG1P_MEAN, analysis::CAMELS_LOG1P_STD));
+        let calibrated = analysis::calibrate_to_stats(&raw, mean, std);
+        self.nbody_input = Some(MapData::from_flat(calibrated.clone()));
+        self.status = "N-body done, running emulator...".into();
+        self.send_inference(&calibrated, "nbody", ctx.clone());
+        ctx.request_repaint();
     }
 
     // ---- Async result polling ----
@@ -621,7 +664,7 @@ impl BayronikApp {
             });
 
             // Power spectrum + S(k)
-            self.show_analysis_plots(ui, &out.flat, &gt.flat, Some(&self.camels_input.clone().unwrap().flat));
+            self.show_analysis_plots(ui, &out.flat, &gt.flat, Some(&self.camels_input.clone().unwrap().flat), None);
         }
     }
 
@@ -657,8 +700,6 @@ impl BayronikApp {
             let running = self.nbody_running || self.inference_pending;
             ui.add_enabled_ui(!running, |ui| {
                 if ui.button(egui::RichText::new("Run N-Body + Emulator").strong().size(16.0)).clicked() {
-                    self.nbody_running = true;
-                    self.status = "Running N-body simulation...".into();
                     let config = engine::SimConfig {
                         seed: self.nbody_seed,
                         grid_res: self.nbody_grid_res,
@@ -672,17 +713,12 @@ impl BayronikApp {
                         },
                         ..Default::default()
                     };
-                    let raw = engine::run_simulation(&config);
-                    // Affine log-space calibration to the training stats
-                    // corrects residual PM-resolution contrast mismatch.
-                    let (mean, std) = self
-                        .train_stats
-                        .map(|s| (s.input_log1p_mean, s.input_log1p_std))
-                        .unwrap_or((analysis::CAMELS_LOG1P_MEAN, analysis::CAMELS_LOG1P_STD));
-                    let calibrated = analysis::calibrate_to_stats(&raw, mean, std);
-                    self.nbody_input = Some(MapData::from_flat(calibrated.clone()));
-                    self.status = "N-body done, running emulator...".into();
-                    self.send_inference(&calibrated, "nbody", ctx.clone());
+                    // Advanced one step per frame in advance_nbody_sim so the
+                    // browser main thread never freezes.
+                    self.nbody_sim = Some(engine::Simulation::new(config));
+                    self.nbody_running = true;
+                    self.status = format!("N-body: step 0/{}", self.nbody_steps);
+                    ctx.request_repaint();
                 }
             });
             if running {
@@ -711,7 +747,11 @@ impl BayronikApp {
             });
 
             if let Some(out) = &self.nbody_output {
-                self.show_analysis_plots(ui, &out.flat, &inp.flat, None);
+                // PM information limit: the internal projection has
+                // min(res, 2*grid) pixels; above that Nyquist (in mode-index
+                // units of the final map) everything is interpolation.
+                let k_max = (self.resolution.min(2 * self.nbody_grid_res) / 2) as f64;
+                self.show_analysis_plots(ui, &out.flat, &inp.flat, None, Some(k_max));
             }
         }
     }
@@ -923,12 +963,26 @@ impl BayronikApp {
 
     // ---- Shared analysis plots ----
 
-    fn show_analysis_plots(&self, ui: &mut egui::Ui, output: &[f32], reference: &[f32], dm_input: Option<&[f32]>) {
+    /// `k_max`: optional resolution cutoff in mode-index units. For N-body
+    /// inputs the PM mesh (projected at min(res, 2*grid) pixels, then
+    /// bilinearly upsampled) carries no information above mode
+    /// min(res, 2*grid)/2; plotting beyond it shows P(k) of interpolation
+    /// noise and blows up the S(k) ratio, so those bins are dropped.
+    fn show_analysis_plots(&self, ui: &mut egui::Ui, output: &[f32], reference: &[f32], dm_input: Option<&[f32]>, k_max: Option<f64>) {
         let n = self.resolution;
         let log_out = analysis::safe_log1p_field(output);
         let log_ref = analysis::safe_log1p_field(reference);
         let (k_out, pk_out) = analysis::power_spectrum(&log_out, n);
         let (k_ref, pk_ref) = analysis::power_spectrum(&log_ref, n);
+
+        let cut = k_max.unwrap_or(f64::INFINITY);
+        let clamp = |ks: &[f64], ps: &[f64]| -> Vec<[f64; 2]> {
+            ks.iter()
+                .zip(ps.iter())
+                .filter(|&(&k, _)| k <= cut)
+                .map(|(&k, &p)| [k.ln(), p.ln()])
+                .collect()
+        };
 
         ui.separator();
         ui.columns(2, |cols| {
@@ -941,16 +995,10 @@ impl BayronikApp {
                     if let Some(dm) = dm_input {
                         let log_dm = analysis::safe_log1p_field(dm);
                         let (k_dm, pk_dm) = analysis::power_spectrum(&log_dm, n);
-                        plot_ui.line(
-                            line("Input DM", k_dm.iter().zip(pk_dm.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()).width(1.5),
-                        );
+                        plot_ui.line(line("Input DM", clamp(&k_dm, &pk_dm)).width(1.5));
                     }
-                    plot_ui.line(
-                        line("Reference", k_ref.iter().zip(pk_ref.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()).width(1.5),
-                    );
-                    plot_ui.line(
-                        line("Prediction", k_out.iter().zip(pk_out.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()).width(2.0),
-                    );
+                    plot_ui.line(line("Reference", clamp(&k_ref, &pk_ref)).width(1.5));
+                    plot_ui.line(line("Prediction", clamp(&k_out, &pk_out)).width(2.0));
                 });
 
             // Baryon suppression
@@ -962,7 +1010,15 @@ impl BayronikApp {
                 .show(&mut cols[1], |plot_ui| {
                     plot_ui.hline(HLine::new("S=1", 1.0));
                     plot_ui.line(
-                        line("S(k) = P_out/P_ref", k_s.iter().zip(s_k.iter()).map(|(&k, &s)| [k, s]).collect()).width(2.0),
+                        line(
+                            "S(k) = P_out/P_ref",
+                            k_s.iter()
+                                .zip(s_k.iter())
+                                .filter(|&(&k, _)| k <= cut)
+                                .map(|(&k, &s)| [k, s])
+                                .collect(),
+                        )
+                        .width(2.0),
                     );
                 });
         });
@@ -991,6 +1047,7 @@ impl BayronikApp {
 impl eframe::App for BayronikApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_pending();
+        self.advance_nbody_sim(ctx);
 
         // Top bar
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
