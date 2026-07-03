@@ -126,25 +126,25 @@ pub fn safe_log1p_field(field: &[f32]) -> Vec<f32> {
     field.iter().map(|&v| (v.max(0.0) + 1.0).ln()).collect()
 }
 
-/// Mean of log1p(Mcdm) over CAMELS IllustrisTNG LH z=0 column-density maps.
-/// Measured from `model/data/Maps_Mcdm_IllustrisTNG_LH_z=0.00.npy` (10 random
-/// samples). Inputs to the U-FNO emulator are expected to live in this
-/// distribution because the training pipeline applies `log1p` before the
-/// forward pass.
+/// Fallback log1p(Mcdm) moments of the CAMELS IllustrisTNG LH z=0 maps,
+/// measured offline from `Maps_Mcdm_IllustrisTNG_LH_z=0.00.npy`. Used only
+/// when the server's `/stats` endpoint has not been fetched yet; the live
+/// values come from the actual mounted training data.
 pub const CAMELS_LOG1P_MEAN: f32 = 25.5;
 pub const CAMELS_LOG1P_STD: f32 = 1.04;
 
-/// Rescale a field so its `log1p` distribution matches the CAMELS Mcdm
-/// training set. This makes out-of-distribution inputs (e.g., a particle-mesh
-/// projection in raw particle counts) consumable by a model trained on
-/// `log1p(column_density)` in `Msun/h/Mpc^2`.
+/// Rescale a field so its `log1p` distribution matches the training set
+/// moments (`target_mean`, `target_std`), typically fetched from the
+/// server's `/stats` endpoint. This corrects residual distribution shift in
+/// N-body inputs (PM resolution effects, projection depth) so a model
+/// trained on `log1p(surface_density)` sees in-distribution values.
 ///
 /// The transform is affine in log space:
-///     log1p(out) = (log1p(field) - μ_field) / σ_field * σ_camels + μ_camels
+///     log1p(out) = (log1p(field) - mu_field) / sigma_field * target_std + target_mean
 /// so spatial structure (clustering, Fourier modes) is preserved exactly;
-/// only the absolute scale and contrast are normalized. Fields already in the
-/// CAMELS distribution are left effectively unchanged.
-pub fn calibrate_to_camels(field: &[f32]) -> Vec<f32> {
+/// only the absolute scale and contrast are normalized. Fields already in
+/// the training distribution are left effectively unchanged.
+pub fn calibrate_to_stats(field: &[f32], target_mean: f32, target_std: f32) -> Vec<f32> {
     let n = field.len();
     if n == 0 {
         return Vec::new();
@@ -161,7 +161,7 @@ pub fn calibrate_to_camels(field: &[f32]) -> Vec<f32> {
         .iter()
         .map(|&v| {
             let z = (v - mean) / std;
-            let rescaled = z * CAMELS_LOG1P_STD + CAMELS_LOG1P_MEAN;
+            let rescaled = z * target_std + target_mean;
             (rescaled.exp() - 1.0).max(0.0)
         })
         .collect()

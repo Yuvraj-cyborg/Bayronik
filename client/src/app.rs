@@ -10,7 +10,12 @@ fn line(name: &str, points: Vec<[f64; 2]>) -> Line<'static> {
 use crate::analysis;
 use crate::visualization::{array_to_colorimage, array_to_colorimage_diverging, compute_statistics, Colormap};
 
-const API_URL: &str = "http://localhost:8000";
+/// Inference backend. Override at build time for deployments:
+/// `BAYRONIK_API_URL=https://api.example.com wasm-pack build ...`
+const API_URL: &str = match option_env!("BAYRONIK_API_URL") {
+    Some(url) => url,
+    None => "http://localhost:8000",
+};
 
 // ---- API types ----
 
@@ -53,6 +58,14 @@ struct SampleResponse {
     input_map: Vec<Vec<f32>>,
     ground_truth: Vec<Vec<f32>>,
     params: Vec<f32>,
+}
+
+/// Training-set log1p moments served by `/stats`, used to calibrate
+/// N-body inputs into the model's training distribution.
+#[derive(Deserialize, Clone, Copy)]
+struct StatsResponse {
+    input_log1p_mean: f32,
+    input_log1p_std: f32,
 }
 
 // ---- App state ----
@@ -114,6 +127,10 @@ pub struct BayronikApp {
     sample_loading: bool,
     pending_info: Arc<Mutex<Option<Result<DatasetInfo, String>>>>,
 
+    // Training-set calibration stats (from /stats; None until fetched)
+    train_stats: Option<StatsResponse>,
+    pending_stats: Arc<Mutex<Option<Result<StatsResponse, String>>>>,
+
     // N-Body tab
     nbody_grid_res: usize,
     nbody_box_size: f32,
@@ -123,6 +140,9 @@ pub struct BayronikApp {
     nbody_output: Option<MapData>,
     nbody_diff: Option<MapData>,
     nbody_running: bool,
+    // In-flight simulation, advanced one KDK step per frame so the
+    // single-threaded WASM main loop never blocks.
+    nbody_sim: Option<engine::Simulation>,
 
     // Sweep tab
     sweep_param_name: String,
@@ -173,14 +193,18 @@ impl Default for BayronikApp {
             sample_loading: false,
             pending_info: Arc::new(Mutex::new(None)),
 
+            train_stats: None,
+            pending_stats: Arc::new(Mutex::new(None)),
+
             nbody_grid_res: 32,
-            nbody_box_size: 100.0,
-            nbody_steps: 10,
+            nbody_box_size: 25.0,
+            nbody_steps: 32,
             nbody_seed: 42,
             nbody_input: None,
             nbody_output: None,
             nbody_diff: None,
             nbody_running: false,
+            nbody_sim: None,
 
             sweep_param_name: "a_sn1".into(),
             sweep_steps: 3,
@@ -198,6 +222,7 @@ impl BayronikApp {
         let mut app = Self::default();
         app.check_server_health(cc.egui_ctx.clone());
         app.fetch_dataset_info(cc.egui_ctx.clone());
+        app.fetch_train_stats(cc.egui_ctx.clone());
         app
     }
 
@@ -245,6 +270,24 @@ impl BayronikApp {
             };
             if let Ok(mut guard) = pending.lock() {
                 *guard = Some(info);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn fetch_train_stats(&self, ctx: egui::Context) {
+        let url = format!("{}/stats", API_URL);
+        let pending = self.pending_stats.clone();
+        ehttp::fetch(ehttp::Request::get(&url), move |result| {
+            let stats = match result {
+                Ok(resp) if resp.status == 200 => {
+                    serde_json::from_slice::<StatsResponse>(&resp.bytes).map_err(|e| e.to_string())
+                }
+                Ok(resp) => Err(format!("HTTP {}", resp.status)),
+                Err(e) => Err(e),
+            };
+            if let Ok(mut guard) = pending.lock() {
+                *guard = Some(stats);
             }
             ctx.request_repaint();
         });
@@ -313,6 +356,40 @@ impl BayronikApp {
         });
     }
 
+    // ---- N-body frame-sliced execution ----
+
+    /// Advance the in-flight N-body run by one KDK step per frame. Keeps the
+    /// single-threaded WASM event loop responsive and lets the status line
+    /// show live progress. On completion: project, calibrate to the training
+    /// stats, and hand off to the emulator.
+    fn advance_nbody_sim(&mut self, ctx: &egui::Context) {
+        let Some(sim) = self.nbody_sim.as_mut() else {
+            return;
+        };
+
+        let more = sim.step();
+        self.status = format!("N-body: step {}/{}", sim.current_step(), sim.n_steps());
+
+        if more {
+            ctx.request_repaint();
+            return;
+        }
+
+        let sim = self.nbody_sim.take().unwrap();
+        let raw = sim.projected_map();
+        // Affine log-space calibration to the training stats corrects
+        // residual PM-resolution contrast mismatch.
+        let (mean, std) = self
+            .train_stats
+            .map(|s| (s.input_log1p_mean, s.input_log1p_std))
+            .unwrap_or((analysis::CAMELS_LOG1P_MEAN, analysis::CAMELS_LOG1P_STD));
+        let calibrated = analysis::calibrate_to_stats(&raw, mean, std);
+        self.nbody_input = Some(MapData::from_flat(calibrated.clone()));
+        self.status = "N-body done, running emulator...".into();
+        self.send_inference(&calibrated, "nbody", ctx.clone());
+        ctx.request_repaint();
+    }
+
     // ---- Async result polling ----
 
     fn poll_pending(&mut self) {
@@ -325,6 +402,15 @@ impl BayronikApp {
                         self.camels_info = Some(info);
                     }
                     Err(_) => {}
+                }
+            }
+        }
+
+        // Training stats
+        if let Ok(mut guard) = self.pending_stats.lock() {
+            if let Some(result) = guard.take() {
+                if let Ok(stats) = result {
+                    self.train_stats = Some(stats);
                 }
             }
         }
@@ -578,13 +664,13 @@ impl BayronikApp {
             });
 
             // Power spectrum + S(k)
-            self.show_analysis_plots(ui, &out.flat, &gt.flat, Some(&self.camels_input.clone().unwrap().flat));
+            self.show_analysis_plots(ui, &out.flat, &gt.flat, Some(&self.camels_input.clone().unwrap().flat), None);
         }
     }
 
     fn tab_nbody(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.label("Generate a dark matter density map using the Particle-Mesh N-body simulator, then run the emulator.");
-        ui.small("The N-body simulation runs entirely in your browser via WebAssembly.");
+        ui.label("Generate a dark matter surface density map with the built-in LCDM particle-mesh N-body code, then run the emulator.");
+        ui.small("Zel'dovich ICs from an Eisenstein-Hu P(k) at z=49, KDK leapfrog to z=0. Runs entirely in your browser via WebAssembly.");
 
         ui.separator();
 
@@ -599,31 +685,40 @@ impl BayronikApp {
                     ui.selectable_value(&mut self.nbody_grid_res, 64, "64³ (slow)");
                 });
             ui.label("Box:");
-            ui.add(egui::DragValue::new(&mut self.nbody_box_size).range(50.0..=500.0).suffix(" Mpc/h"));
+            ui.add(egui::DragValue::new(&mut self.nbody_box_size).range(25.0..=100.0).suffix(" Mpc/h"));
             ui.label("Steps:");
-            ui.add(egui::DragValue::new(&mut self.nbody_steps).range(3..=50));
+            ui.add(egui::DragValue::new(&mut self.nbody_steps).range(8..=64));
             ui.label("Seed:");
             ui.add(egui::DragValue::new(&mut self.nbody_seed).range(0..=99999));
         });
+        ui.small(format!(
+            "Cosmology from the sliders: Ωm={:.2}, σ₈={:.2}. CAMELS box is 25 Mpc/h.",
+            self.omega_m, self.sigma_8
+        ));
 
         ui.horizontal(|ui| {
             let running = self.nbody_running || self.inference_pending;
             ui.add_enabled_ui(!running, |ui| {
                 if ui.button(egui::RichText::new("Run N-Body + Emulator").strong().size(16.0)).clicked() {
+                    let config = engine::SimConfig {
+                        seed: self.nbody_seed,
+                        grid_res: self.nbody_grid_res,
+                        box_size: self.nbody_box_size,
+                        n_steps: self.nbody_steps,
+                        projection_res: self.resolution,
+                        cosmo: engine::Cosmology {
+                            omega_m: self.omega_m as f64,
+                            sigma8: self.sigma_8 as f64,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    // Advanced one step per frame in advance_nbody_sim so the
+                    // browser main thread never freezes.
+                    self.nbody_sim = Some(engine::Simulation::new(config));
                     self.nbody_running = true;
-                    self.status = "Running N-body simulation...".into();
-                    let raw = engine::run_simulation(
-                        self.nbody_seed,
-                        self.nbody_grid_res,
-                        self.nbody_box_size,
-                        0.01,
-                        self.nbody_steps,
-                        self.resolution,
-                    );
-                    let calibrated = analysis::calibrate_to_camels(&raw);
-                    self.nbody_input = Some(MapData::from_flat(calibrated.clone()));
-                    self.status = "N-body done, running emulator...".into();
-                    self.send_inference(&calibrated, "nbody", ctx.clone());
+                    self.status = format!("N-body: step 0/{}", self.nbody_steps);
+                    ctx.request_repaint();
                 }
             });
             if running {
@@ -652,7 +747,11 @@ impl BayronikApp {
             });
 
             if let Some(out) = &self.nbody_output {
-                self.show_analysis_plots(ui, &out.flat, &inp.flat, None);
+                // PM information limit: the internal projection has
+                // min(res, 2*grid) pixels; above that Nyquist (in mode-index
+                // units of the final map) everything is interpolation.
+                let k_max = (self.resolution.min(2 * self.nbody_grid_res) / 2) as f64;
+                self.show_analysis_plots(ui, &out.flat, &inp.flat, None, Some(k_max));
             }
         }
     }
@@ -827,7 +926,7 @@ impl BayronikApp {
         ui.strong("Components");
         egui::Grid::new("about_grid").striped(true).show(ui, |ui| {
             ui.label("engine");
-            ui.label("Particle-mesh N-body simulator (runs in-browser via WASM)");
+            ui.label("Cosmological PM N-body code: LCDM, EH98 P(k), Zel'dovich ICs (runs in-browser via WASM)");
             ui.end_row();
             ui.label("model");
             ui.label("Python U-FNO training and scientific validation pipeline");
@@ -864,12 +963,26 @@ impl BayronikApp {
 
     // ---- Shared analysis plots ----
 
-    fn show_analysis_plots(&self, ui: &mut egui::Ui, output: &[f32], reference: &[f32], dm_input: Option<&[f32]>) {
+    /// `k_max`: optional resolution cutoff in mode-index units. For N-body
+    /// inputs the PM mesh (projected at min(res, 2*grid) pixels, then
+    /// bilinearly upsampled) carries no information above mode
+    /// min(res, 2*grid)/2; plotting beyond it shows P(k) of interpolation
+    /// noise and blows up the S(k) ratio, so those bins are dropped.
+    fn show_analysis_plots(&self, ui: &mut egui::Ui, output: &[f32], reference: &[f32], dm_input: Option<&[f32]>, k_max: Option<f64>) {
         let n = self.resolution;
         let log_out = analysis::safe_log1p_field(output);
         let log_ref = analysis::safe_log1p_field(reference);
         let (k_out, pk_out) = analysis::power_spectrum(&log_out, n);
         let (k_ref, pk_ref) = analysis::power_spectrum(&log_ref, n);
+
+        let cut = k_max.unwrap_or(f64::INFINITY);
+        let clamp = |ks: &[f64], ps: &[f64]| -> Vec<[f64; 2]> {
+            ks.iter()
+                .zip(ps.iter())
+                .filter(|&(&k, _)| k <= cut)
+                .map(|(&k, &p)| [k.ln(), p.ln()])
+                .collect()
+        };
 
         ui.separator();
         ui.columns(2, |cols| {
@@ -882,16 +995,10 @@ impl BayronikApp {
                     if let Some(dm) = dm_input {
                         let log_dm = analysis::safe_log1p_field(dm);
                         let (k_dm, pk_dm) = analysis::power_spectrum(&log_dm, n);
-                        plot_ui.line(
-                            line("Input DM", k_dm.iter().zip(pk_dm.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()).width(1.5),
-                        );
+                        plot_ui.line(line("Input DM", clamp(&k_dm, &pk_dm)).width(1.5));
                     }
-                    plot_ui.line(
-                        line("Reference", k_ref.iter().zip(pk_ref.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()).width(1.5),
-                    );
-                    plot_ui.line(
-                        line("Prediction", k_out.iter().zip(pk_out.iter()).map(|(&k, &p)| [k.ln(), p.ln()]).collect()).width(2.0),
-                    );
+                    plot_ui.line(line("Reference", clamp(&k_ref, &pk_ref)).width(1.5));
+                    plot_ui.line(line("Prediction", clamp(&k_out, &pk_out)).width(2.0));
                 });
 
             // Baryon suppression
@@ -903,7 +1010,15 @@ impl BayronikApp {
                 .show(&mut cols[1], |plot_ui| {
                     plot_ui.hline(HLine::new("S=1", 1.0));
                     plot_ui.line(
-                        line("S(k) = P_out/P_ref", k_s.iter().zip(s_k.iter()).map(|(&k, &s)| [k, s]).collect()).width(2.0),
+                        line(
+                            "S(k) = P_out/P_ref",
+                            k_s.iter()
+                                .zip(s_k.iter())
+                                .filter(|&(&k, _)| k <= cut)
+                                .map(|(&k, &s)| [k, s])
+                                .collect(),
+                        )
+                        .width(2.0),
                     );
                 });
         });
@@ -932,6 +1047,7 @@ impl BayronikApp {
 impl eframe::App for BayronikApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_pending();
+        self.advance_nbody_sim(ctx);
 
         // Top bar
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
@@ -1014,9 +1130,21 @@ impl eframe::App for BayronikApp {
                     ui.colored_label(color, label);
                     ui.code(API_URL);
                 });
+                match self.train_stats {
+                    Some(s) => ui.small(format!(
+                        "calibration: μ={:.2} σ={:.2} (server)",
+                        s.input_log1p_mean, s.input_log1p_std
+                    )),
+                    None => ui.small(format!(
+                        "calibration: μ={:.2} σ={:.2} (fallback)",
+                        analysis::CAMELS_LOG1P_MEAN,
+                        analysis::CAMELS_LOG1P_STD
+                    )),
+                };
                 if ui.button("Check Connection").clicked() {
                     self.check_server_health(ctx.clone());
                     self.fetch_dataset_info(ctx.clone());
+                    self.fetch_train_stats(ctx.clone());
                 }
             });
 
